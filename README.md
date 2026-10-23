@@ -1,242 +1,138 @@
-<div align="center">
+# RevealLayer-TextRemoval
 
-<div style="text-align: center;">
-    <img src="./assets/logo.png" alt="RevealLayer Logo" style="height: 96px;">
-    <h2>Disentangling Hidden and Visible Layers via Occlusion-Aware Image Decomposition</h2>
-</div>
+Training-free, single-pass scene text removal built on
+[RevealLayer](https://github.com/360CVGroup/RevealLayer) (ICML 2026).
 
-<div>
-  <strong>
-  Binhao Wang<sup>1,2,*</sup>,&nbsp;
-  Shihao Zhao<sup>1,2,*</sup>,&nbsp;
-  Bo Cheng<sup>2,*,†</sup>,&nbsp;
-  Qiuyu Ji<sup>1,2</sup>,&nbsp;
-  Yuhang Ma<sup>2</sup>,<br>
-  Liebucha Wu<sup>2</sup>,&nbsp;
-  Shanyuan Liu<sup>2</sup>,&nbsp;
-  Dawei Leng<sup>2,‡</sup>,&nbsp;
-  Yuhui Yin<sup>2</sup>
-  </strong>
-</div>
+RevealLayer decomposes an image into RGBA layers and recovers the content hidden behind each object. This repository
+treats the text as the object and takes the recovered background as the text-free image. The pretrained RevealLayer
+checkpoint is used unchanged. The method changes only the inference:
 
-<div>
-  <sup>1</sup>Wenzhou University&nbsp;&nbsp;&nbsp;
-  <sup>2</sup>360 AI Research
-</div>
+- **Separate inputs.** The text layer reads an image that contains only the text. The background reads a
+  boundary-filled image.
+- **Background keep.** The background layer is kept equal to the input outside the text.
+- **Attention blocking.** The background layer cannot attend to the text tokens.
 
-<div>
-  <sup>*</sup> Equal Contribution. &nbsp;
-  <sup>†</sup> Project Lead. &nbsp;
-  <sup>‡</sup> Corresponding Author.
-</div>
+The text mask follows the text layer extracted at every denoising step, so one inference is enough. See
+[docs/METHOD.md](docs/METHOD.md).
 
-<br>
+> This is a fork of [360CVGroup/RevealLayer](https://github.com/360CVGroup/RevealLayer). The upstream history is
+> kept; the changes to upstream files are listed in [Changes from upstream](#changes-from-upstream).
 
-<div>
-  <h3>🔥 Accepted by ICML 2026!</h3>
-</div>
+## Results
 
-<div>
-  <a href="https://zhao0100.github.io/RevealLayer/" target="_blank">
-    <img src="https://img.shields.io/static/v1?label=Project%20Page&message=Github&color=blue&logo=github-pages">
-  </a>
-  &ensp;
-  <a href="https://arxiv.org/abs/2605.11818" target="_blank">
-    <img src="https://img.shields.io/static/v1?label=Paper&message=arXiv&color=red&logo=arxiv">
-  </a>
-  &ensp;
-  <a href="https://huggingface.co/datasets/qihoo360/RevealLayer-100K" target="_blank">
-    <img src="https://img.shields.io/static/v1?label=Dataset&message=RevealLayer&color=green">
-  </a>
-  &ensp;
-  <a href="https://huggingface.co/qihoo360/RevealLayer" target="_blank">
-    <img src="https://img.shields.io/static/v1?label=Model&message=HuggingFace&color=yellow">
-  </a>
-  &ensp;
-  <a href="https://research.360.cn/products/Reveal-Layer" target="_blank">
-    <img src="https://img.shields.io/static/v1?label=App/API&message=RevealLayer&color=brightgreen">
-  </a>
-</div>
+SCUT-EnsText test set (813 images) with the official ViTEraser metrics and FID. The table shows the main setting:
+the largest text region of each image is removed, and pixels outside it are taken from the GT (paste). The other
+settings (raw output, all text, the 500-image subset with RePaint) are in [docs/RESULTS.md](docs/RESULTS.md).
 
-<br>
+| Method | PSNR↑ | MS-SSIM↑ | MSE↓ | AGE↓ | pEPS↓ | pCEPS↓ | FID↓ |
+|---|---|---|---|---|---|---|---|
+| Ours | 44.06 | 0.9921 | 0.00067 | 0.583 | 0.0064 | 0.0050 | 5.90 |
+| ASUKA (FLUX.1-Fill) | 30.53 | 0.9743 | 0.00264 | 1.621 | 0.0180 | 0.0131 | 14.98 |
+| OSOR | 39.06 | 0.9870 | 0.00129 | 0.961 | 0.0113 | 0.0087 | 7.61 |
+| FLUX.1-Fill | 30.93 | 0.9726 | 0.00298 | 1.869 | 0.0208 | 0.0156 | 15.98 |
+| ViTEraser | **48.58** | **0.9943** | **0.00016** | **0.285** | **0.0027** | **0.0017** | **3.19** |
+| ConText | 42.23 | 0.9874 | 0.00050 | 0.481 | 0.0052 | 0.0030 | 8.34 |
 
-<strong>
-RevealLayer decomposes an RGB image into multiple RGBA layers, enabling precise layer separation and reliable recovery of occluded content in natural scenes.
-</strong>
+## Installation
 
-<br><br>
-
-<div style="width: 100%; text-align: center; margin: auto;">
-    <img style="width:100%" src="assets/demo1.png" alt="RevealLayer teaser">
-</div>
-
-For more visual results, go checkout our <a href="https://360cvgroup.github.io/RevealLayer/" target="_blank">project page</a>.
-
----
-
-</div>
-
-## ⭐ Update
-
-- **[2026.06]** 🔥🔥 [RevealLayer V2](https://research.360.cn/products/Reveal-Layer) is now available with improved performance.
-- **[2026.06]** We released [RevealLayer-100K and RevealLayerBench](https://huggingface.co/datasets/qihoo360/RevealLayer-100K) on Hugging Face.
-- **[2026.05]** We released the [RevealLayer checkpoint](https://huggingface.co/qihoo360/RevealLayer) on Hugging Face.
-- **[2026.05]** We released the RevealLayer paper and inference code.
-
----
-
-## 🎃 Overview
-
-RevealLayer focuses on occlusion-aware image layer decomposition, recovering visible and hidden RGBA layers from a single RGB image with region guidance.
-
-<div style="width: 100%; text-align: center; margin: auto;">
-    <img style="width:100%" src="assets/framework.png" alt="RevealLayer framework">
-</div>
-
----
-
-## 📷 Datasets
-
-<div style="width: 100%; text-align: center; margin: auto;">
-    <img style="width:100%" src="assets/pipeline.png" alt="RevealLayer dataset pipeline">
-</div>
-
-We construct a large-scale multi-layer image decomposition dataset, including **RevealLayer-100K** for training and **RevealLayerBench** for evaluation. RevealLayer-100K contains 100K multi-layer natural image tuples with RGB images, background layers, RGBA foreground layers, and bounding boxes. RevealLayerBench contains 200 high-quality manually curated images, covering challenging cases such as complex occlusions, large-area objects, transparent materials, small foreground objects, and multi-layer scenes.
-
-🔥 We will release **RevealLayer-100K** and **RevealLayerBench** on [Hugging Face](https://huggingface.co/datasets/qihoo360/RevealLayer-100K). We hope they can serve as useful training and evaluation resources for future research on occlusion-aware image layer decomposition.
-
-> 🚩 The datasets are intended for research use. Please follow the license and terms provided with the released dataset.
-
----
-
-## 🔧 Quick Start
-
-### 0. Experimental environment
-
-We tested our inference code with Python 3.10 and CUDA GPUs.
-
-### 1. Setup repository and environment
+Tested with Python 3.10 and CUDA GPUs.
 
 ```bash
-git clone https://github.com/Zhao0100/RevealLayer.git
-cd RevealLayer
+git clone <this repository> RevealLayer-TextRemoval
+cd RevealLayer-TextRemoval
 
 conda create -n reveallayer python=3.10
 conda activate reveallayer
-
 pip install -r requirements.txt
-
 pip install flash-attn --no-build-isolation
-
-cd diffusers
-pip install .
-cd ..
+pip install ./diffusers          # the diffusers copy bundled with RevealLayer
 ```
 
----
-
-## 📦 Prepare the models
-
-Model files are hosted with Git LFS, so please enable Git LFS before cloning model repositories.
+## Models
 
 ```bash
-git lfs install
+bash scripts/download_models.sh   # needs git-lfs and access to FLUX.1-dev on Hugging Face
 ```
 
-Download the RevealLayer checkpoint:
-
-```bash
-git clone https://huggingface.co/qihoo360/RevealLayer models/RevealLayer
-```
-
-Download FLUX.1-dev:
-
-```bash
-git clone https://huggingface.co/black-forest-labs/FLUX.1-dev models/FLUX.1-dev
-```
-
-The expected model directory structure is:
+This downloads [qihoo360/RevealLayer](https://huggingface.co/qihoo360/RevealLayer),
+[black-forest-labs/FLUX.1-dev](https://huggingface.co/black-forest-labs/FLUX.1-dev) and the torchvision ViT-B/32
+weights:
 
 ```text
-models
-├── RevealLayer
-│   ├── pytorch_lora_weights.safetensors
-│   ├── layer_pe.pt
-│   ├── Refiner.pt
-│   ├── xvae
-│   │   └── transparent_decoder_ckpt.pth
-│   └── ...
-├── FLUX.1-dev
-│   ├── transformer
-│   ├── vae
-│   ├── text_encoder
-│   ├── text_encoder_2
-│   ├── tokenizer
-│   ├── tokenizer_2
-│   └── ...
+models/
+├── RevealLayer/        pytorch_lora_weights.safetensors, layer_pe.pt, Refiner.pt, xvae/transparent_decoder_ckpt.pth
+├── FLUX.1-dev/         transformer/, vae/, text_encoder/, text_encoder_2/, tokenizer/, tokenizer_2/
+└── ViT-B-32/           vit_b_32-d86f8d99.pth
 ```
 
-If your local model directory is different, please modify the corresponding paths in the inference script.
+Use `--models-dir` to point to checkpoints stored elsewhere.
 
----
+## Usage
 
-## 🗂️ Prepare input JSON
-
-The input JSON should contain a list of samples. Each sample should include the input image path and detected bounding boxes.
-
-Example:
-
-```json
-[
-  {
-    "imgid": "examples",
-    "full_image": "RevealLayer-Bench/examples/full_image.png",
-    "background": "RevealLayer-Bench/examples/background.png",
-    "LayerInfoRaw": [
-      "RevealLayer-Bench/examples/layer_0.png",
-      "RevealLayer-Bench/examples/layer_1.png"
-    ],
-    "detections": [
-      {
-        "bbox": [x1, y1, x2, y2]
-      },
-      {
-        "bbox": [x1, y1, x2, y2]
-      }
-    ]
-  }
-]
-```
-
-The expected fields are:
-
-```text
-imgid        : sample id
-full_image   : path to the input RGB image
-background   : path to the background image, optional for inference
-LayerInfoRaw : paths to the ground-truth RGBA layers, optional for inference
-detections   : detected foreground objects
-bbox         : bounding box in [x1, y1, x2, y2] format
-```
-
----
-
-## ⚡ Inference
-
-Run inference with:
+The input is an image and a binary text mask (white = text, same size as the image).
 
 ```bash
-bash infer.sh 0
+python scripts/remove_text.py --image path/to/image.jpg --mask path/to/mask.png \
+    --scope all_text --output-dir outputs/demo --paste-back
 ```
-> **Note:** `--guidance_scale` controls the decomposition strength. In our experiments, we use `--guidance_scale 1.0`, which provides the best background removal performance while preserving background details.
 
-Before running, please make sure the paths in `infer.sh` and `infer.py` match your local model and data directories.
+`outputs/demo/<id>/` then contains the following files:
 
----
+| File | Content |
+|---|---|
+| `bg_rgb.png` | text-free image at the RevealLayer resolution |
+| `result.png` | (`--paste-back`) text-free image at the input size, with the input image outside the text mask |
+| `text_layer_rgba.png` | extracted text layer |
+| `metadata.json` | settings and timing |
 
-## 📑 Citation
+`--scope largest_text` removes only the largest connected text region. `--save-intermediates` also saves the
+per-step masks and clean-estimate previews.
 
-If you find our work useful for your research, please consider citing:
+For a dataset, pass a directory of images and a directory of same-named masks:
+
+```bash
+python scripts/remove_text.py --images-dir data/SCUT-EnsText/test/all_images \
+    --masks-dir data/SCUT-EnsText/test/all_masks --scope largest_text \
+    --output-dir outputs/scut_largest_text --shard 0 --num-shards 1
+```
+
+Samples that already have a result are skipped. Failures are written to `failed.txt` and the run continues.
+
+## Evaluation
+
+[eval/](eval) builds the SCUT-EnsText targets and runs the official ViTEraser metrics, FID, the result tables and
+the qualitative figures. See [docs/RESULTS.md](docs/RESULTS.md#reproducing). The dataset is not included: download
+[SCUT-EnsText](https://github.com/HCIILAB/SCUT-EnsText) and follow its license.
+
+## Repository layout
+
+```text
+textremoval/      the method: inputs, per-step guidance, fills, model loading
+scripts/          remove_text.py (inference), download_models.sh
+eval/             SCUT-EnsText evaluation (targets, metrics, tables, figures)
+models/           RevealLayer model code (with the changes below)
+docs/             method and full results
+tests/            CPU unit tests: python -m unittest discover -s tests
+infer.py, eval.py, infer.sh, configs/, diffusers/, benchmark/   upstream RevealLayer
+```
+
+## Changes from upstream
+
+The original layer-decomposition inference (`infer.py`) still behaves as upstream when the new arguments are not
+given.
+
+- `models/custom_pipeline.py`: new optional arguments `blocked_token_maps_callback`,
+  `velocity_correction_callback`, `foreground_adapter_image` and `foreground_reference_image`.
+- `models/custom_model_mmdit.py`:
+  - blocks the marked tokens from the background queries through the attention mask;
+  - adds an optional extra full-image layer that only the object layers attend to.
+- `configs/base.py`, `infer.py`, `infer.sh`, `models/custom_model_xvae.py`: local model paths instead of the
+  authors' machine paths, and the FLUX path given on the command line is honoured.
+- `requirements.txt`: the `peft` and `xformers` lines are valid pip requirements.
+
+## Citation
+
+This work builds on RevealLayer. If you use this code, please cite:
 
 ```bibtex
 @inproceedings{wang2026reveallayer,
@@ -247,8 +143,7 @@ If you find our work useful for your research, please consider citing:
 }
 ```
 
----
+## License
 
-## 📝 License
-
-This project is licensed under the [Apache License 2.0](LICENSE).
+The code follows the upstream RevealLayer license (Apache License 2.0). The model weights have their own licenses;
+in particular, FLUX.1-dev is distributed under the FLUX.1 [dev] Non-Commercial License.
