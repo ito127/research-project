@@ -64,7 +64,7 @@ def scores(targets: Path, methods: list[str], out_csv: Path) -> list[dict]:
     rows = []
     for gt_path in sorted((targets / "gt").glob("*.png")):
         stem = gt_path.stem
-        mask = rgb(targets / "masks" / f"{stem}.png")[..., 0] >= 128
+        mask = np.asarray(Image.open(targets / "masks" / f"{stem}.png").convert("L")) >= 128
         if not mask.any():
             continue
         gt = rgb(gt_path)
@@ -100,7 +100,7 @@ def figure(cases, methods, targets: Path, images_dir: Path, title: str, path: Pa
     for r, case in enumerate(cases):
         stem = case["id"]
         y = top + head + r * (CELL + foot)
-        mask = rgb(targets / "masks" / f"{stem}.png")[..., 0] >= 128
+        mask = np.asarray(Image.open(targets / "masks" / f"{stem}.png").convert("L")) >= 128
         box = crop_box(mask)
         image = rgb(images_dir / f"{stem}.jpg")
         full = Image.fromarray(image)
