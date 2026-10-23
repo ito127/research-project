@@ -1,14 +1,13 @@
 #!/usr/bin/env python3
-"""Per-image scores and qualitative comparison figures (cases where our method succeeds / fails).
+"""Per-image scores and a qualitative comparison figure of the cases where our method works best.
 
 Score = PSNR inside the evaluation mask L of the paste target against the GT (outside L every method equals the GT,
-so this is the per-image quantity the paste table averages). Only masks with at least ``--min-area`` pixels are
-selected so the region is visible:
-  success : largest  PSNR_ours - max(PSNR of the other methods)
-  failure : smallest PSNR_ours - median(PSNR of the other methods)
+so this is the per-image quantity the paste table averages). Among masks with at least ``--min-area`` pixels (so the
+region is visible), the figure shows the ``--cases`` images with the largest PSNR_ours - max(PSNR of the other
+methods): a crop around L of the input (L outlined in red), the GT and every method.
+
 Uses ``targets/<set>/paste/<method>`` of ``build_targets.py`` (``--set subset500`` to include methods run on
-img_0..img_499 only). Writes per_image_psnr.csv, qualitative_success.png, qualitative_failure.png and
-qualitative_cases.csv into the workdir.
+img_0..img_499 only). Writes per_image_psnr.csv, qualitative.png and qualitative_cases.csv into the workdir.
 """
 
 from __future__ import annotations
@@ -23,10 +22,15 @@ from PIL import Image, ImageDraw, ImageFont
 from summarize import LABELS
 
 CELL = 220
+GAP = 4
 
 
 def rgb(path: Path) -> np.ndarray:
     return np.asarray(Image.open(path).convert("RGB"))
+
+
+def load_mask(path: Path) -> np.ndarray:
+    return np.asarray(Image.open(path).convert("L")) >= 128
 
 
 def masked_psnr(out: np.ndarray, gt: np.ndarray, mask: np.ndarray) -> float:
@@ -52,19 +56,17 @@ def outline(mask: np.ndarray) -> np.ndarray:
 
 
 def font(size: int):
-    for name in ("DejaVuSans.ttf", "DejaVuSans-Bold.ttf"):
-        try:
-            return ImageFont.truetype(name, size)
-        except OSError:
-            continue
-    return ImageFont.load_default(size)
+    try:
+        return ImageFont.truetype("DejaVuSans.ttf", size)
+    except OSError:
+        return ImageFont.load_default(size)
 
 
 def scores(targets: Path, methods: list[str], out_csv: Path) -> list[dict]:
     rows = []
     for gt_path in sorted((targets / "gt").glob("*.png")):
         stem = gt_path.stem
-        mask = np.asarray(Image.open(targets / "masks" / f"{stem}.png").convert("L")) >= 128
+        mask = load_mask(targets / "masks" / f"{stem}.png")
         if not mask.any():
             continue
         gt = rgb(gt_path)
@@ -73,7 +75,6 @@ def scores(targets: Path, methods: list[str], out_csv: Path) -> list[dict]:
             row[method] = masked_psnr(rgb(targets / "paste" / method / f"{stem}.png"), gt, mask)
         others = np.array([row[m] for m in methods[1:]])
         row["ours_minus_best_other"] = row[methods[0]] - others.max()
-        row["ours_minus_median_other"] = row[methods[0]] - np.median(others)
         row["ours_rank"] = int(1 + (others > row[methods[0]]).sum())
         rows.append(row)
     with out_csv.open("w", newline="") as handle:
@@ -83,47 +84,29 @@ def scores(targets: Path, methods: list[str], out_csv: Path) -> list[dict]:
     return rows
 
 
-def figure(cases, methods, targets: Path, images_dir: Path, title: str, path: Path) -> None:
-    regular, small, big = font(17), font(15), font(22)
-    columns = ["Input", "Input (zoom)", "GT"] + [LABELS.get(m, m).split(" (")[0] for m in methods]
-    left, head, foot, top = 90, 34, 24, 70
-    canvas = Image.new("RGB", (left + CELL * len(columns), top + head + (CELL + foot) * len(cases)), "white")
+def figure(cases, methods, targets: Path, images_dir: Path, path: Path) -> None:
+    """Rows = cases; columns = input crop (text outlined), GT, then every method (ours first, highlighted)."""
+    regular = font(17)
+    columns = ["Input", "GT"] + [LABELS.get(m, m).split(" (")[0] for m in methods]
+    head = 34
+    canvas = Image.new("RGB", (CELL * len(columns), head + (CELL + GAP) * len(cases) - GAP), "white")
     draw = ImageDraw.Draw(canvas)
-    draw.text((10, 6), title, font=big, fill="black")
-    draw.text((10, 40), "Below each cell: PSNR inside the evaluated text (red = best in the row). "
-                        "Left: image id / mask area / ours minus best other.", font=small, fill=(60, 60, 60))
     for c, name in enumerate(columns):
-        x = left + c * CELL
-        if c == 3:
-            draw.rectangle([x, top, x + CELL - 1, top + head - 2], fill=(255, 236, 200))
-        draw.text((x + (CELL - draw.textlength(name, font=regular)) / 2, top + 6), name, font=regular, fill="black")
+        x = c * CELL
+        if c == 2:
+            draw.rectangle([x, 0, x + CELL - 1, head - 2], fill=(255, 236, 200))
+        draw.text((x + (CELL - draw.textlength(name, font=regular)) / 2, 6), name, font=regular, fill="black")
     for r, case in enumerate(cases):
         stem = case["id"]
-        y = top + head + r * (CELL + foot)
-        mask = np.asarray(Image.open(targets / "masks" / f"{stem}.png").convert("L")) >= 128
+        y = head + r * (CELL + GAP)
+        mask = load_mask(targets / "masks" / f"{stem}.png")
         box = crop_box(mask)
-        image = rgb(images_dir / f"{stem}.jpg")
-        full = Image.fromarray(image)
-        ImageDraw.Draw(full).rectangle(box, outline=(255, 0, 0), width=4)
-        marked = image.copy()
+        marked = rgb(images_dir / f"{stem}.jpg").copy()
         marked[outline(mask)] = (255, 0, 0)
-        cells = [full.resize((CELL, CELL), Image.LANCZOS),
-                 Image.fromarray(marked).crop(box).resize((CELL, CELL), Image.LANCZOS),
-                 Image.open(targets / "gt" / f"{stem}.png").convert("RGB").crop(box).resize((CELL, CELL), Image.LANCZOS)]
-        cells += [Image.open(targets / "paste" / m / f"{stem}.png").convert("RGB").crop(box)
-                  .resize((CELL, CELL), Image.LANCZOS) for m in methods]
-        best = max(methods, key=lambda m: case[m])
+        cells = [Image.fromarray(marked), Image.open(targets / "gt" / f"{stem}.png").convert("RGB")]
+        cells += [Image.open(targets / "paste" / m / f"{stem}.png").convert("RGB") for m in methods]
         for c, cell in enumerate(cells):
-            x = left + c * CELL
-            canvas.paste(cell, (x + 2, y + 2))
-            if c >= 3:
-                method = methods[c - 3]
-                text = f"{case[method]:.2f} dB"
-                draw.text((x + (CELL - draw.textlength(text, font=small)) / 2, y + CELL + 2), text, font=small,
-                          fill=(200, 0, 0) if method == best else "black")
-        draw.text((8, y + CELL / 2 - 30), stem, font=regular, fill="black")
-        draw.text((8, y + CELL / 2 - 6), f"{case['mask_area']}px", font=small, fill=(90, 90, 90))
-        draw.text((8, y + CELL / 2 + 14), f"Δ{case['ours_minus_best_other']:+.1f}", font=small, fill=(90, 90, 90))
+            canvas.paste(cell.crop(box).resize((CELL - GAP, CELL - GAP), Image.LANCZOS), (c * CELL + GAP // 2, y))
     canvas.save(path)
 
 
@@ -139,21 +122,14 @@ def main(argv=None) -> int:
     targets = args.workdir / "targets" / args.set
     rows = scores(targets, args.methods, args.workdir / "per_image_psnr.csv")
     pool = [r for r in rows if r["mask_area"] >= args.min_area]
-    success = sorted(pool, key=lambda r: -r["ours_minus_best_other"])[:args.cases]
-    failure = sorted(pool, key=lambda r: r["ours_minus_median_other"])[:args.cases]
-    others = len(args.methods) - 1
-    figure(success, args.methods, targets, args.images_dir,
-           f"Success cases (largest ours - best of {others} other methods)", args.workdir / "qualitative_success.png")
-    figure(failure, args.methods, targets, args.images_dir,
-           f"Failure cases (smallest ours - median of {others} other methods)", args.workdir / "qualitative_failure.png")
+    cases = sorted(pool, key=lambda r: -r["ours_minus_best_other"])[:args.cases]
+    figure(cases, args.methods, targets, args.images_dir, args.workdir / "qualitative.png")
     with (args.workdir / "qualitative_cases.csv").open("w", newline="") as handle:
         writer = csv.writer(handle)
-        writer.writerow(["kind", "id", "mask_area", "ours_rank"] + args.methods
-                        + ["ours_minus_best_other", "ours_minus_median_other"])
-        for kind, cases in (("success", success), ("failure", failure)):
-            for c in cases:
-                writer.writerow([kind, c["id"], c["mask_area"], c["ours_rank"]] + [f"{c[m]:.2f}" for m in args.methods]
-                                + [f"{c['ours_minus_best_other']:.2f}", f"{c['ours_minus_median_other']:.2f}"])
+        writer.writerow(["id", "mask_area", "ours_rank"] + args.methods + ["ours_minus_best_other"])
+        for c in cases:
+            writer.writerow([c["id"], c["mask_area"], c["ours_rank"]] + [f"{c[m]:.2f}" for m in args.methods]
+                            + [f"{c['ours_minus_best_other']:.2f}"])
     print(f"{len(rows)} images scored, {len(pool)} with mask >= {args.min_area}px")
     return 0
 

@@ -16,7 +16,7 @@ The text mask follows the text layer extracted at every denoising step, so one i
 [docs/METHOD.md](docs/METHOD.md).
 
 > This is a fork of [360CVGroup/RevealLayer](https://github.com/360CVGroup/RevealLayer). The upstream history is
-> kept; the changes to upstream files are listed in [Changes from upstream](#changes-from-upstream).
+> kept, and only the parts needed for text removal remain (see [Changes from upstream](#changes-from-upstream)).
 
 ## Results
 
@@ -33,11 +33,10 @@ settings (raw output, all text, the 500-image subset with RePaint) are in [docs/
 | ViTEraser | **48.58** | **0.9943** | **0.00016** | **0.285** | **0.0027** | **0.0017** | **3.19** |
 | ConText | 42.23 | 0.9874 | 0.00050 | 0.481 | 0.0052 | 0.0030 | 8.34 |
 
-The figure shows the cases where our method beats the best other method by the largest margin (largest_text,
-img_0–img_499, paste). The red box marks the evaluated text and the number under each cell is the PSNR inside it.
-The all_text figures are in [docs/RESULTS.md](docs/RESULTS.md#qualitative-results).
+Qualitative results (largest_text): the evaluated text is outlined in red in the input. The all_text figure is in
+[docs/RESULTS.md](docs/RESULTS.md#qualitative-results).
 
-![Success cases on SCUT-EnsText (largest_text)](assets/results/largest_text_success.png)
+![Qualitative results on SCUT-EnsText (largest_text)](assets/results/largest_text.png)
 
 <sub>Images: SCUT-EnsText test set, shown for research comparison only.</sub>
 
@@ -52,7 +51,6 @@ cd RevealLayer-TextRemoval
 conda create -n reveallayer python=3.10
 conda activate reveallayer
 pip install -r requirements.txt
-pip install flash-attn --no-build-isolation
 pip install ./diffusers          # the diffusers copy bundled with RevealLayer
 ```
 
@@ -62,15 +60,13 @@ pip install ./diffusers          # the diffusers copy bundled with RevealLayer
 bash scripts/download_models.sh   # needs git-lfs and access to FLUX.1-dev on Hugging Face
 ```
 
-This downloads [qihoo360/RevealLayer](https://huggingface.co/qihoo360/RevealLayer),
-[black-forest-labs/FLUX.1-dev](https://huggingface.co/black-forest-labs/FLUX.1-dev) and the torchvision ViT-B/32
-weights:
+This downloads [qihoo360/RevealLayer](https://huggingface.co/qihoo360/RevealLayer) and
+[black-forest-labs/FLUX.1-dev](https://huggingface.co/black-forest-labs/FLUX.1-dev):
 
 ```text
 models/
 ├── RevealLayer/        pytorch_lora_weights.safetensors, layer_pe.pt, Refiner.pt, xvae/transparent_decoder_ckpt.pth
-├── FLUX.1-dev/         transformer/, vae/, text_encoder/, text_encoder_2/, tokenizer/, tokenizer_2/
-└── ViT-B-32/           vit_b_32-d86f8d99.pth
+└── FLUX.1-dev/         transformer/, vae/, text_encoder/, text_encoder_2/, tokenizer/, tokenizer_2/
 ```
 
 Use `--models-dir` to point to checkpoints stored elsewhere.
@@ -119,24 +115,29 @@ textremoval/      the method: inputs, per-step guidance, fills, model loading
 scripts/          remove_text.py (inference), download_models.sh
 eval/             SCUT-EnsText evaluation (targets, metrics, tables, figures)
 models/           RevealLayer model code (with the changes below)
+diffusers/        the diffusers copy bundled with RevealLayer (unchanged)
 docs/             method and full results
 tests/            CPU unit tests: python -m unittest discover -s tests
-infer.py, eval.py, infer.sh, configs/, diffusers/, benchmark/   upstream RevealLayer
 ```
 
 ## Changes from upstream
 
-The original layer-decomposition inference (`infer.py`) still behaves as upstream when the new arguments are not
-given.
-
-- `models/custom_pipeline.py`: new optional arguments `blocked_token_maps_callback`,
-  `velocity_correction_callback`, `foreground_adapter_image` and `foreground_reference_image`.
-- `models/custom_model_mmdit.py`:
-  - blocks the marked tokens from the background queries through the attention mask;
-  - adds an optional extra full-image layer that only the object layers attend to.
-- `configs/base.py`, `infer.py`, `infer.sh`, `models/custom_model_xvae.py`: local model paths instead of the
-  authors' machine paths, and the FLUX path given on the command line is honoured.
-- `requirements.txt`: the `peft` and `xformers` lines are valid pip requirements.
+- **Added to the model code:**
+  - `models/custom_pipeline.py`: optional arguments `blocked_token_maps_callback`, `velocity_correction_callback`,
+    `foreground_adapter_image` and `foreground_reference_image`.
+  - `models/custom_model_mmdit.py`: the marked tokens are blocked from the background queries through the
+    attention mask, and an optional extra full-image layer is added that only the object layers attend to.
+- **Removed (not needed for text removal):**
+  - the layer-decomposition inference and evaluation (`infer.py`, `infer.sh`, `eval.py`), the training configs
+    (`configs/`), RevealLayerBench (`benchmark/`) and the upstream README figures;
+  - the unused pipeline class and prompt helpers in `models/custom_pipeline.py`;
+  - the training-only gradient checkpointing and unused helpers in `models/custom_model_mmdit.py`.
+- **Simplified:**
+  - The model loading and input geometry of `infer.py` now live in `textremoval/runtime.py`.
+  - The transparent decoder (`models/custom_model_xvae.py`) no longer loads ImageNet ViT-B/32 weights first,
+    because every weight comes from `transparent_decoder_ckpt.pth`.
+  - `requirements.txt` drops `mmengine`, `xformers` and `flash-attn`.
+- `diffusers/` is unchanged.
 
 ## Citation
 

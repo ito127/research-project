@@ -94,20 +94,18 @@ All 813 images, raw:
 
 ## Qualitative results
 
-Per-image PSNR inside the evaluated text of the paste targets. Only images whose evaluated text has at least
-1500 pixels are considered, so the region is visible.
-
-- **Success**: the five images where our PSNR minus the best other method is largest.
-
-The figures use `eval/qualitative.py`. Images: SCUT-EnsText test set, shown for research comparison only.
+The images are ranked by our PSNR inside the evaluated text minus that of the best other method (paste targets).
+Only images whose evaluated text has at least 1500 pixels are considered, so the region is visible. The five
+images with the largest margin are shown. Each cell is a crop around the evaluated text, which is outlined in red in
+the input. The figures use `eval/qualitative.py`. Images: SCUT-EnsText test set, shown for research comparison only.
 
 **largest_text** (img_0–img_499, with RePaint):
 
-![largest_text success cases](../assets/results/largest_text_success.png)
+![largest_text qualitative results](../assets/results/largest_text.png)
 
 **all_text** (all 813 images):
 
-![all_text success cases](../assets/results/all_text_success.png)
+![all_text qualitative results](../assets/results/all_text.png)
 
 ## Reproducing
 
