@@ -42,31 +42,34 @@ Qualitative results (largest_text): the evaluated text is outlined in red in the
 
 ## Installation
 
-Tested with Python 3.10 and CUDA GPUs.
+Tested with Python 3.10, PyTorch 2.7.1 (CUDA 12.8) and NVIDIA Blackwell GPUs.
 
 ```bash
-git clone <this repository> RevealLayer-TextRemoval
+git clone https://github.com/ito127/research-project.git RevealLayer-TextRemoval
 cd RevealLayer-TextRemoval
-
-conda create -n reveallayer python=3.10
+bash scripts/setup_env.sh            # conda env "reveallayer"; PYTORCH_CUDA=cu126 for older drivers
 conda activate reveallayer
-pip install -r requirements.txt
-pip install ./diffusers          # the diffusers copy bundled with RevealLayer
 ```
+
+`setup_env.sh` installs PyTorch from the PyTorch index, then `requirements.txt` and the bundled `diffusers/`.
 
 ## Models
 
+FLUX.1-dev is gated. Accept its license on
+[Hugging Face](https://huggingface.co/black-forest-labs/FLUX.1-dev), then log in and download:
+
 ```bash
-bash scripts/download_models.sh   # needs git-lfs and access to FLUX.1-dev on Hugging Face
+hf auth login
+bash scripts/download_models.sh
 ```
 
-This downloads [qihoo360/RevealLayer](https://huggingface.co/qihoo360/RevealLayer) and
-[black-forest-labs/FLUX.1-dev](https://huggingface.co/black-forest-labs/FLUX.1-dev):
+This downloads [qihoo360/RevealLayer](https://huggingface.co/qihoo360/RevealLayer) and the diffusers-format folders
+of [black-forest-labs/FLUX.1-dev](https://huggingface.co/black-forest-labs/FLUX.1-dev):
 
 ```text
 models/
 ├── RevealLayer/        pytorch_lora_weights.safetensors, layer_pe.pt, Refiner.pt, xvae/transparent_decoder_ckpt.pth
-└── FLUX.1-dev/         transformer/, vae/, text_encoder/, text_encoder_2/, tokenizer/, tokenizer_2/
+└── FLUX.1-dev/         transformer/, vae/, text_encoder/, text_encoder_2/, tokenizer/, tokenizer_2/, scheduler/
 ```
 
 Use `--models-dir` to point to checkpoints stored elsewhere.
@@ -112,7 +115,7 @@ the qualitative figures. See [docs/RESULTS.md](docs/RESULTS.md#reproducing). The
 
 ```text
 textremoval/      the method: inputs, per-step guidance, fills, model loading
-scripts/          remove_text.py (inference), download_models.sh
+scripts/          remove_text.py (inference), setup_env.sh, download_models.sh
 eval/             SCUT-EnsText evaluation (targets, metrics, tables, figures)
 models/           RevealLayer model code (with the changes below)
 diffusers/        the diffusers copy bundled with RevealLayer (unchanged)
@@ -136,7 +139,8 @@ tests/            CPU unit tests: python -m unittest discover -s tests
   - The model loading and input geometry of `infer.py` now live in `textremoval/runtime.py`.
   - The transparent decoder (`models/custom_model_xvae.py`) no longer loads ImageNet ViT-B/32 weights first,
     because every weight comes from `transparent_decoder_ckpt.pth`.
-  - `requirements.txt` drops `mmengine`, `xformers` and `flash-attn`.
+  - `requirements.txt` drops `mmengine`, `xformers` and `flash-attn`; `scripts/setup_env.sh` installs PyTorch
+    with an explicit CUDA build, and `scripts/download_models.sh` uses `hf download` (no git-lfs).
 - `diffusers/` is unchanged.
 
 ## Citation

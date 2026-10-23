@@ -1,33 +1,17 @@
 #!/usr/bin/env bash
-# Download the RevealLayer and FLUX.1-dev checkpoints into models/.
+# Download the RevealLayer and FLUX.1-dev checkpoints into models/ (about 33 GB).
 # Usage: bash scripts/download_models.sh [model-directory]
+# FLUX.1-dev is gated: accept its license on Hugging Face and run `hf auth login` first.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 MODEL_ROOT="${1:-${REPO_ROOT}/models}"
+command -v hf >/dev/null 2>&1 || { echo "the 'hf' command (huggingface_hub) was not found; activate the environment." >&2; exit 1; }
 
-for command in git git-lfs; do
-  if ! command -v "${command}" >/dev/null 2>&1; then
-    echo "${command} is required but was not found." >&2
-    exit 1
-  fi
-done
-
-git lfs install
-mkdir -p "${MODEL_ROOT}"
-
-clone_if_absent() {
-  local url="$1"
-  local destination="$2"
-  if [[ -e "${destination}" ]]; then
-    echo "Already exists, leaving unchanged: ${destination}"
-    return
-  fi
-  git clone "${url}" "${destination}"
-}
-
-clone_if_absent "https://huggingface.co/qihoo360/RevealLayer" "${MODEL_ROOT}/RevealLayer"
-clone_if_absent "https://huggingface.co/black-forest-labs/FLUX.1-dev" "${MODEL_ROOT}/FLUX.1-dev"
+hf download qihoo360/RevealLayer --local-dir "${MODEL_ROOT}/RevealLayer"
+# Only the diffusers-format folders are used; the single-file checkpoints (flux1-dev.safetensors, ae.safetensors)
+# duplicate them and are skipped.
+hf download black-forest-labs/FLUX.1-dev --local-dir "${MODEL_ROOT}/FLUX.1-dev" \
+  --exclude "flux1-dev.safetensors" "ae.safetensors" "dev_grid.jpg"
 
 echo "Models downloaded to: ${MODEL_ROOT}"
-echo "If FLUX.1-dev access was denied, accept its Hugging Face license and run 'hf auth login', then retry."
