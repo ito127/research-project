@@ -33,6 +33,14 @@ settings (raw output, all text, the 500-image subset with RePaint) are in [docs/
 | ViTEraser | **48.58** | **0.9943** | **0.00016** | **0.285** | **0.0027** | **0.0017** | **3.19** |
 | ConText | 42.23 | 0.9874 | 0.00050 | 0.481 | 0.0052 | 0.0030 | 8.34 |
 
+The figure shows the cases where our method beats the best other method by the largest margin (largest_text,
+img_0–img_499, paste). The red box marks the evaluated text and the number under each cell is the PSNR inside it.
+The all_text figures are in [docs/RESULTS.md](docs/RESULTS.md#qualitative-results).
+
+![Success cases on SCUT-EnsText (largest_text)](assets/results/largest_text_success.png)
+
+<sub>Images: SCUT-EnsText test set, shown for research comparison only.</sub>
+
 ## Installation
 
 Tested with Python 3.10 and CUDA GPUs.

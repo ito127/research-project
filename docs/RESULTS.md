@@ -92,6 +92,23 @@ All 813 images, raw:
 | ConText | 34.08 | 0.9620 | 0.00109 | 1.938 | 0.0114 | 0.0058 | 24.33 | 813 |
 | Input image as is (reference) | 26.01 | 0.9277 | 0.00676 | 4.697 | 0.0400 | 0.0270 | 53.22 | 813 |
 
+## Qualitative results
+
+Per-image PSNR inside the evaluated text of the paste targets. Only images whose evaluated text has at least
+1500 pixels are considered, so the region is visible.
+
+- **Success**: the five images where our PSNR minus the best other method is largest.
+
+The figures use `eval/qualitative.py`. Images: SCUT-EnsText test set, shown for research comparison only.
+
+**largest_text** (img_0–img_499, with RePaint):
+
+![largest_text success cases](../assets/results/largest_text_success.png)
+
+**all_text** (all 813 images):
+
+![all_text success cases](../assets/results/all_text_success.png)
+
 ## Reproducing
 
 ```bash
