@@ -171,8 +171,9 @@ class ViTEncoder(nn.Module):
         )
         self.fc_in = nn.Linear(16, ch)
         self.fc_out = nn.Linear(ch, 256)
-        user_home = '/home/jovyan'
-        weights_base_dir = os.path.join(user_home, 'boomcheng-work-shcdt', 'zhaoshihao', 'pretrained_model', 'vit32')
+        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        default_weights_base_dir = os.path.join(project_root, 'models', 'ViT-B-32')
+        weights_base_dir = os.environ.get('REVEALLAYER_VIT32_DIR', default_weights_base_dir)
         if self.arch == 'vit-b/32':
             from torchvision.models.vision_transformer import vit_b_32, ViT_B_32_Weights
             # vit = vit_b_32(weights=local_weight_path)

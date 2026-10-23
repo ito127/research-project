@@ -1,5 +1,5 @@
 ### Model Settings
-pretrained_model_name_or_path = "/home/jovyan/boomcheng-data-shcdt/chengbo/MODEL_DiT/FLUX.1-dev"
+pretrained_model_name_or_path = "./models/FLUX.1-dev"
 revision = None
 variant = None
 cache_dir = None

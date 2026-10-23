@@ -1,0 +1,12 @@
+# Downloaded checkpoints (the model source code in models/*.py is tracked).
+/models/RevealLayer/
+/models/FLUX.1-dev/
+/models/ViT-B-32/
+
+# Data, results and logs.
+/data/
+/outputs/
+/eval_runs/
+/logs/
+__pycache__/
+*.py[cod]

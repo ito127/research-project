@@ -95,8 +95,10 @@ def _load_refiner(transformer, ckpt_dir: str):
 
 def _prepare_custom_transformer(config, args):
     print("STEP 1: Initializing base Transformer model...")
+    # Prefer the path supplied by the inference command over the config's
+    # pretrained_model_name_or_path, so a local --pretrained_model_name_or_path is honoured.
     transformer_orig = FluxTransformer2DModel.from_pretrained(
-        config.transformer_varient if hasattr(config, "transformer_varient") else config.pretrained_model_name_or_path,
+        config.transformer_varient if hasattr(config, "transformer_varient") else args.pretrained_model_name_or_path,
         subfolder="" if hasattr(config, "transformer_varient") else "transformer",
         revision=config.revision,
         variant=config.variant,
@@ -450,7 +452,7 @@ def parse_args():
     parser.add_argument(
         "--pretrained_model_name_or_path",
         type=str,
-        default="/home/jovyan/liushanyuan-sh-ceph-new/tools/black-forest-labs/FLUX.1-dev",
+        default="./models/FLUX.1-dev",
     )
     parser.add_argument(
         "--cfg_path",
@@ -460,12 +462,12 @@ def parse_args():
     parser.add_argument(
         "--ckpt_dir",
         type=str,
-        default="./ckpts/RevealLayer",
+        default="./models/RevealLayer",
     )
     parser.add_argument(
         "--transp_vae_ckpt",
         type=str,
-        default="./ckpts/xvae/transparent_decoder_ckpt.pth",
+        default="./models/RevealLayer/xvae/transparent_decoder_ckpt.pth",
     )
     parser.add_argument("--cfg", type=float, default=1.0, help="Classifier-Free Guidance scale.")
     parser.add_argument("--steps", type=int, default=30, help="Number of inference steps.")

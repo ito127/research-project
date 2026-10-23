@@ -26,7 +26,7 @@ for ((gpu_id=0; gpu_id<gpus; gpu_id++)); do
         echo "GPU ${gpu_id}, process ${j}, cid ${cid}, tols ${tols}"
         CUDA_VISIBLE_DEVICES=${gpu_id} \
         CRYPTOGRAPHY_OPENSSL_NO_LEGACY=1 \
-        nohup /home/jovyan/boomcheng-work-shcdt/zhaoshihao/anaconda/envs/flux/bin/python -u "${PROJECT_ROOT}/${ENTRY}" \
+        nohup "${PYTHON:-python}" -u "${PROJECT_ROOT}/${ENTRY}" \
             --cid ${cid} \
             --tols ${tols} \
             > "${LOGDIR}/proc${mid}_${gpu_id}_${j}.log" 2>&1 &
