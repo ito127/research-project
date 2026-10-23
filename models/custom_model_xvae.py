@@ -6,14 +6,11 @@ from typing import Callable
 import torch
 import torch.nn as nn
 import torchvision
-from torch.utils.checkpoint import checkpoint
 
-from accelerate.utils import set_module_tensor_to_device
 from diffusers.models.embeddings import apply_rotary_emb, FluxPosEmbed
 from diffusers.models.modeling_utils import ModelMixin
 from diffusers.configuration_utils import ConfigMixin
 from diffusers.loaders import FromOriginalModelMixin
-import os
 
 class MLPBlock(torchvision.ops.misc.MLP):
     """Transformer MLP block."""
@@ -141,25 +138,20 @@ class Encoder(nn.Module):
         input = input # + self.pos_embedding
         x = self.dropout(input)
         for l in self.layers:
-            x = checkpoint(l, x, freqs_cis)
+            x = l(x, freqs_cis)
         x = self.ln(x)
         return x
 
 
 class ViTEncoder(nn.Module):
-    def __init__(self, arch='vit-b/32'):
-        super().__init__()
-        self.arch = arch
+    """ViT-B/32-sized transformer encoder of the transparent decoder.
 
-        if self.arch == 'vit-b/32':
-            ch = 768
-            layers = 12
-            heads = 12
-        elif self.arch == 'vit-h/14':
-            ch = 1280
-            layers = 32
-            heads = 16
-        
+    All of its weights are loaded from ``transparent_decoder_ckpt.pth``.
+    """
+
+    def __init__(self):
+        super().__init__()
+        ch, layers, heads = 768, 12, 12
         self.encoder = Encoder(
             seq_length=-1,
             num_layers=layers,
@@ -171,48 +163,12 @@ class ViTEncoder(nn.Module):
         )
         self.fc_in = nn.Linear(16, ch)
         self.fc_out = nn.Linear(ch, 256)
-        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        default_weights_base_dir = os.path.join(project_root, 'models', 'ViT-B-32')
-        weights_base_dir = os.environ.get('REVEALLAYER_VIT32_DIR', default_weights_base_dir)
-        if self.arch == 'vit-b/32':
-            from torchvision.models.vision_transformer import vit_b_32, ViT_B_32_Weights
-            # vit = vit_b_32(weights=local_weight_path)
-            # # vit = vit_b_32(weights=ViT_B_32_Weights.DEFAULT)
-            weight_path = os.path.join(weights_base_dir, 'vit_b_32-d86f8d99.pth')
-            if not os.path.exists(weight_path):
-                raise FileNotFoundError(f"ViT-B/32 weight file not found: {weight_path}")
-            print(f"[{os.getpid()}] Creating ViT-B/32 structure...")
-            vit = vit_b_32(weights=None)
-            print(f"[{os.getpid()}] Loading local weights from: {weight_path}")
-            state_dict = torch.load(weight_path, map_location='cpu')
-            print(f"[{os.getpid()}] Applying weights to the model...")
-            vit.load_state_dict(state_dict, strict=True)
-            print(f"[{os.getpid()}] ViT-B/32 loaded successfully.")
-        elif self.arch == 'vit-h/14':
-            from torchvision.models.vision_transformer import vit_h_14, ViT_H_14_Weights
-            vit = vit_h_14(weights=ViT_H_14_Weights.IMAGENET1K_SWAG_E2E_V1)
 
-        missing_keys, unexpected_keys = self.encoder.load_state_dict(vit.encoder.state_dict(), strict=False)
-        if len(missing_keys) > 0 or len(unexpected_keys) > 0:
-            print(f"ViT Encoder Missing keys: {missing_keys}")
-            print(f"ViT Encoder Unexpected keys: {unexpected_keys}")
-        del vit
-    
     def forward(self, x, freqs_cis):
         out = self.fc_in(x)
         out = self.encoder(out, freqs_cis)
-        out = checkpoint(self.fc_out, out)
+        out = self.fc_out(out)
         return out
-
-
-def patchify(x, patch_size=8):
-    if len(x.shape) == 4:
-        bs, c, h, w = x.shape
-        x = einops.rearrange(x, "b c (h p1) (w p2) -> b (c p1 p2) h w", p1=patch_size, p2=patch_size)
-    elif len(x.shape) == 3:
-        c, h, w = x.shape
-        x = einops.rearrange(x, "c (h p1) (w p2) -> (c p1 p2) h w", p1=patch_size, p2=patch_size)
-    return x
 
 
 def unpatchify(x, patch_size=8):
@@ -265,40 +221,19 @@ def prepare_latent_image_ids(batch_size, height, width, device, dtype):
 
 
 class AutoencoderKLTransformerTraining(ModelMixin, ConfigMixin, FromOriginalModelMixin):
+    """RevealLayer's transparent decoder: latents of each layer -> RGB and alpha inside its box."""
+
     def __init__(self):
         super().__init__()
-
-        self.decoder_arch = 'vit'
-        self.layer_embedding = 'rope'
-
         self.decoder = ViTEncoder()
         self.pos_embedding = FluxPosEmbed(theta=10000, axes_dim=(8, 28, 28))
-        if 'rel' in self.layer_embedding or 'abs' in self.layer_embedding:
-            self.layer_embedding = nn.Parameter(torch.empty(16, 2 + self.max_layers, 1, 1).normal_(std=0.02), requires_grad=True)
-
-        def zero_module(module):
-            """
-            Zero out the parameters of a module and return it.
-            """
-            for p in module.parameters():
-                p.detach().zero_()
-            return module
 
     def encode(self, z_2d, box, use_layers):
         B, C, T, H, W = z_2d.shape
 
         z, freqs_cis = [], []
         for b in range(B):
-            _z = z_2d[b]
-            if 'vit' in self.decoder_arch:
-                _use_layers = torch.tensor(use_layers[b], device=z_2d.device)
-                if 'rel' in self.layer_embedding:
-                    _use_layers[_use_layers > 2] = 2
-                if 'rel' in self.layer_embedding or 'abs' in self.layer_embedding:
-                    _z = _z + self.layer_embedding[:, _use_layers] # + self.pos_embedding
-            if 'rope' not in self.layer_embedding:
-                use_layers[b] = [0] * len(use_layers[b])
-            _z, cis = crop_each_layer(_z, use_layers[b], box[b], H, W, self.pos_embedding) ### modified
+            _z, cis = crop_each_layer(z_2d[b], use_layers[b], box[b], H, W, self.pos_embedding)
             z.append(_z)
             freqs_cis.append(cis)
 

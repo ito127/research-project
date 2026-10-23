@@ -2,18 +2,15 @@
 
 from __future__ import annotations
 
-import os
+import math
 import random
 from dataclasses import dataclass
 from pathlib import Path
-from types import SimpleNamespace
 
 import numpy as np
 import torch
 from PIL import Image
 from torchvision import transforms
-
-from textremoval import REPO_ROOT
 
 PROMPT = "Decompose the image into foreground and background."
 VAE_SCALE_FACTOR = 8
@@ -24,7 +21,6 @@ class ModelPaths:
     flux: Path
     reveallayer: Path
     transparent_decoder: Path
-    vit32: Path
 
 
 @dataclass(frozen=True)
@@ -41,7 +37,6 @@ def model_paths(models_dir: Path | str) -> ModelPaths:
         flux=root / "FLUX.1-dev",
         reveallayer=root / "RevealLayer",
         transparent_decoder=root / "RevealLayer/xvae/transparent_decoder_ckpt.pth",
-        vit32=root / "ViT-B-32/vit_b_32-d86f8d99.pth",
     )
 
 
@@ -52,22 +47,43 @@ def validate_model_paths(paths: ModelPaths) -> None:
         raise FileNotFoundError(f"Required model files/directories are missing (see README):\n{formatted}")
 
 
-def load_models(models_dir: Path | str, *, gpu_id: int = 0, max_layer: int = 12,
-                cfg_path: Path | str = REPO_ROOT / "configs/ld_resolution1024_test.py"):
-    """Load the RevealLayer pipeline and the transparent decoder (bfloat16) once."""
-    from infer import initialize_pipeline, parse_config
-    from models.custom_model_xvae import AutoencoderKLTransformerTraining as CustomVAE
+def load_models(models_dir: Path | str, *, gpu_id: int = 0, max_layer: int = 12):
+    """Load the RevealLayer pipeline (FLUX.1-dev + RevealLayer LoRA, layer embedding and refiner) and the
+    transparent decoder (bfloat16) once."""
+    from diffusers import AutoencoderKL, FluxTransformer2DModel
+    from diffusers.configuration_utils import FrozenDict
+    from safetensors.torch import load_file
+
+    from models.custom_model_mmdit import CustomFluxTransformer2DModel
+    from models.custom_model_xvae import AutoencoderKLTransformerTraining as TransparentDecoder
+    from models.custom_pipeline import CustomFluxPipelineCfg
 
     paths = model_paths(models_dir)
     validate_model_paths(paths)
-    os.environ.setdefault("REVEALLAYER_VIT32_DIR", str(paths.vit32.parent))
-    args = SimpleNamespace(pretrained_model_name_or_path=str(paths.flux), ckpt_dir=str(paths.reveallayer),
-                           transp_vae_ckpt=str(paths.transparent_decoder), extra_lora_dir=None, gpu_id=gpu_id,
-                           max_layer=max_layer)
+    flux, ckpt = str(paths.flux), paths.reveallayer
     device = torch.device("cuda", index=gpu_id)
-    pipeline = initialize_pipeline(parse_config(str(cfg_path)), args)
-    decoder = CustomVAE()
-    decoder.load_state_dict(torch.load(args.transp_vae_ckpt, map_location="cpu"), strict=False)
+
+    # The FLUX transformer weights, copied into RevealLayer's transformer (+ layer embedding and refiner).
+    transformer_orig = FluxTransformer2DModel.from_pretrained(flux, subfolder="transformer", torch_dtype=torch.bfloat16)
+    config = dict(transformer_orig.config)
+    config["_class_name"] = "CustomSD3Transformer2DModel"
+    config["max_layer_num"] = max_layer
+    transformer = CustomFluxTransformer2DModel.from_config(FrozenDict(config)).to(dtype=torch.bfloat16)
+    transformer.load_state_dict(transformer_orig.state_dict(), strict=False)
+    del transformer_orig
+    transformer.layer_pe.data.copy_(torch.load(ckpt / "layer_pe.pt", map_location="cpu"))
+    refiner = torch.load(ckpt / "Refiner.pt", map_location="cpu")
+    transformer.load_state_dict({f"refiner.{k}": v for k, v in refiner.items()}, strict=False)
+
+    vae = AutoencoderKL.from_pretrained(flux, subfolder="vae", torch_dtype=torch.bfloat16)
+    pipeline = CustomFluxPipelineCfg.from_pretrained(
+        flux, transformer=transformer, vae=vae, torch_dtype=torch.bfloat16).to(device)
+    lora = load_file(ckpt / "pytorch_lora_weights.safetensors")
+    pipeline.load_lora_weights({k.replace("transformer.module.", "transformer."): v for k, v in lora.items()},
+                               adapter_name="layer")
+
+    decoder = TransparentDecoder()
+    decoder.load_state_dict(torch.load(paths.transparent_decoder, map_location="cpu"), strict=False)
     decoder = decoder.to(device=device, dtype=torch.bfloat16).eval()
     return pipeline, decoder, device
 
@@ -80,46 +96,50 @@ def seed_everything(seed: int) -> None:
         torch.cuda.manual_seed_all(seed)
 
 
+def _snap(value: float, mode: str, max_val: int, k: int = 16) -> int:
+    """Round to the 16-pixel token grid (floor or ceil) and clip to [0, max_val]."""
+    rounded = (math.floor if mode == "floor" else math.ceil)(value / k) * k
+    return max(0, min(rounded, max_val))
+
+
 def prepare_image_and_boxes(
     image: Image.Image,
     raw_boxes: list[list[float]],
     *,
     max_layers: int = 12,
+    resolution: int = 1024,
 ) -> tuple[Image.Image, list[tuple[int, int, int, int]], ImageGeometry]:
-    """Apply the resize/crop/BBox geometry of upstream ``infer.py`` (1024 resolution, 16-pixel grid)."""
-    from infer import (
-        _transform_image_consistent_crop,
-        adjust_coordinate,
-        filter_and_align_bboxes,
-        resize_with_bbox_edge,
-    )
-
+    """RevealLayer's input geometry: resize the long side to ``resolution``, centre-crop to the 16-pixel grid and map
+    the object boxes onto it (boxes less than half visible are dropped). Returns the image, the boxes
+    ``[full image, background, objects...]`` and the geometry."""
     image = image.convert("RGB")
-    original_width, original_height = image.size
-    (content_height, content_width), (target_height, target_width), (offset_y, offset_x), _ = (
-        resize_with_bbox_edge(image, [], resolution=1024)
-    )
-    aligned_boxes = filter_and_align_bboxes(
-        raw_boxes, original_width, original_height, content_width, content_height,
-        offset_x, offset_y, target_width, target_height,
-    )
-    resized = _transform_image_consistent_crop(
-        image, content_width, content_height, target_width, target_height, offset_x, offset_y,
-    )
-    boxes = [[0, 0, target_width, target_height]] * 2 + aligned_boxes
-    final_boxes = [
-        (
-            adjust_coordinate(box[0], "floor", max_val=target_width),
-            adjust_coordinate(box[1], "floor", max_val=target_height),
-            adjust_coordinate(box[2], "ceil", max_val=target_width),
-            adjust_coordinate(box[3], "ceil", max_val=target_height),
-        )
-        for box in boxes
-    ][:max_layers]
+    orig_w, orig_h = image.size
+    scale = resolution / max(orig_w, orig_h)
+    content_w, content_h = int(round(orig_w * scale)), int(round(orig_h * scale))
+    target_w, target_h = max(16, (content_w // 16) * 16), max(16, (content_h // 16) * 16)
+    offset_x, offset_y = (content_w - target_w) // 2, (content_h - target_h) // 2
+    resized = image.resize((content_w, content_h), Image.Resampling.LANCZOS).crop(
+        (offset_x, offset_y, offset_x + target_w, offset_y + target_h))
+
+    object_boxes = []
+    scale_w, scale_h = content_w / orig_w, content_h / orig_h
+    for x1, y1, x2, y2 in raw_boxes:
+        sx1, sy1, sx2, sy2 = x1 * scale_w, y1 * scale_h, x2 * scale_w, y2 * scale_h
+        cx1, cy1 = max(0, min(sx1 - offset_x, target_w)), max(0, min(sy1 - offset_y, target_h))
+        cx2, cy2 = max(0, min(sx2 - offset_x, target_w)), max(0, min(sy2 - offset_y, target_h))
+        visible_w, visible_h, scaled_w, scaled_h = cx2 - cx1, cy2 - cy1, sx2 - sx1, sy2 - sy1
+        if (visible_w > 1 and visible_h > 1 and scaled_w > 0 and visible_w / scaled_w >= 0.5
+                and scaled_h > 0 and visible_h / scaled_h >= 0.5):
+            object_boxes.append([_snap(cx1, "floor", target_w), _snap(cy1, "floor", target_h),
+                                 _snap(cx2, "ceil", target_w), _snap(cy2, "ceil", target_h)])
+
+    boxes = [[0, 0, target_w, target_h]] * 2 + object_boxes
+    final_boxes = [(_snap(b[0], "floor", target_w), _snap(b[1], "floor", target_h),
+                    _snap(b[2], "ceil", target_w), _snap(b[3], "ceil", target_h)) for b in boxes][:max_layers]
     return resized, final_boxes, ImageGeometry(
-        original_size=image.size,
-        content_size=(content_width, content_height),
-        target_size=(target_width, target_height),
+        original_size=(orig_w, orig_h),
+        content_size=(content_w, content_h),
+        target_size=(target_w, target_h),
         offset=(offset_x, offset_y),
     )
 

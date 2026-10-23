@@ -1,7 +1,6 @@
 import torch
 import torch.nn as nn
 from typing import Any, Dict, List, Optional, Union, Tuple
-import  os
 from accelerate.utils import set_module_tensor_to_device
 from diffusers.models.modeling_outputs import Transformer2DModelOutput
 from diffusers.models.normalization import AdaLayerNormContinuous
@@ -9,29 +8,13 @@ from diffusers.models.embeddings import CombinedTimestepGuidanceTextProjEmbeddin
 from diffusers.models.transformers.transformer_flux import FluxTransformer2DModel, FluxTransformerBlock, FluxSingleTransformerBlock
 
 from diffusers.configuration_utils import register_to_config
-from diffusers.utils import USE_PEFT_BACKEND, is_torch_version, logging, scale_lora_layers, unscale_lora_layers
+from diffusers.utils import USE_PEFT_BACKEND, logging, scale_lora_layers, unscale_lora_layers
 
 
 logger = logging.get_logger(__name__)
 
 import torch.nn.functional as F
-from einops import rearrange, repeat
 from models.adapter import HybridRefiner
-import torch.nn.utils.parametrize as parametrize
-
-class Clamp(nn.Module):
-    """
-    A module that clamps the input tensor to a specified range.
-    """
-    def __init__(self, min_val: float, max_val: float):
-        super().__init__()
-        self.min_val = min_val
-        self.max_val = max_val
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return torch.clamp(x, self.min_val, self.max_val)
-    def right_inverse(self, y: torch.Tensor) -> torch.Tensor:
-        # This allows the initial parameter to be set correctly
-        return y
 
 class CustomFluxTransformer2DModel(FluxTransformer2DModel):
     """
@@ -136,16 +119,6 @@ class CustomFluxTransformer2DModel(FluxTransformer2DModel):
         for param in self.refiner.parameters():
             param.requires_grad = True  
 
-    @classmethod
-    def from_pretrained(cls, *args, **kwarg):
-        model = super().from_pretrained(*args, **kwarg)
-        for name, para in model.named_parameters():
-            if name != 'layer_pe':
-                device = para.device
-                break
-        model.layer_pe.to(device)
-        return model
-
     def crop_each_layer(self, hidden_states, list_layer_box, factor):
         """
             hidden_states: [1, n_layers, h, w, inner_dim]
@@ -166,37 +139,6 @@ class CustomFluxTransformer2DModel(FluxTransformer2DModel):
 
                 token_list.append(layer_token)
         result = torch.cat(token_list, dim=1)
-        return result
-
-    def get_overlapMask(self, is_overlap_region, bg_overlap, list_layer_box, factor):
-        B, H, W = is_overlap_region.shape
-        segmented_flags_list = []
-        # full_overlap = torch.zeros_like(bg_overlap)
-        for layer_idx in range(0, len(list_layer_box)):
-            if layer_idx == 0:
-                x1, y1, x2, y2 = list_layer_box[layer_idx] 
-                x1, y1, x2, y2 = x1 // factor, y1 // factor, x2 // factor, y2 // factor            
-                region_mask = bg_overlap[:, y1:y2, x1:x2]
-                bs, region_h, region_w = region_mask.shape
-                layer_flags = region_mask.float().view(bs, -1, 1) # Shape: [B, region_h*region_w, 1]
-                segmented_flags_list.append(layer_flags)
-            elif layer_idx == 1:
-                x1, y1, x2, y2 = list_layer_box[layer_idx] 
-                x1, y1, x2, y2 = x1 // factor, y1 // factor, x2 // factor, y2 // factor            
-                region_mask = bg_overlap[:, y1:y2, x1:x2]
-                bs, region_h, region_w = region_mask.shape
-                layer_flags = region_mask.float().view(bs, -1, 1) # Shape: [B, region_h*region_w, 1]
-                segmented_flags_list.append(layer_flags)
-            else:
-                x1, y1, x2, y2 = list_layer_box[layer_idx] 
-                x1, y1, x2, y2 = x1 // factor, y1 // factor, x2 // factor, y2 // factor            
-                region_mask = is_overlap_region[:, y1:y2, x1:x2]
-                bs, region_h, region_w = region_mask.shape
-                layer_flags = region_mask.float().view(bs, -1, 1) # Shape: [B, region_h*region_w, 1]
-                
-                segmented_flags_list.append(layer_flags)
-
-        result = torch.cat(segmented_flags_list, dim=1)      
         return result
 
     def fill_in_processed_tokens(self, hidden_states, full_hidden_states, list_layer_box):
@@ -497,33 +439,14 @@ class CustomFluxTransformer2DModel(FluxTransformer2DModel):
         image_rotary_emb = self.pos_embed(ids)
 
         # --- Transformer Blocks Loop ---
-        for index_block, block in enumerate(self.transformer_blocks):
-            if self.training and self.gradient_checkpointing:
-                def create_custom_forward(module, return_dict=None):
-                    def custom_forward(*inputs):
-                        if return_dict is not None:
-                            return module(*inputs, return_dict=return_dict)
-                        else:
-                            return module(*inputs)
-                    return custom_forward
-                ckpt_kwargs: Dict[str, Any] = {"use_reentrant": False} if is_torch_version(">=", "1.11.0") else {}
-                encoder_hidden_states, hidden_states = torch.utils.checkpoint.checkpoint(
-                    create_custom_forward(block),
-                    hidden_states,
-                    encoder_hidden_states,
-                    temb,
-                    image_rotary_emb,
-                    attention_mask,
-                    **ckpt_kwargs,
-                )
-            else:
-                encoder_hidden_states, hidden_states = block(
-                    hidden_states=hidden_states,
-                    encoder_hidden_states=encoder_hidden_states,
-                    temb=temb,
-                    image_rotary_emb=image_rotary_emb,
-                    attention_mask = attention_mask,
-                )
+        for block in self.transformer_blocks:
+            encoder_hidden_states, hidden_states = block(
+                hidden_states=hidden_states,
+                encoder_hidden_states=encoder_hidden_states,
+                temb=temb,
+                image_rotary_emb=image_rotary_emb,
+                attention_mask = attention_mask,
+            )
 
         clean_tokens = self.crop_each_layer(adapter_data, list_layer_box[1:], 16)  
         l0_len = split_sizes[0]
@@ -544,31 +467,13 @@ class CustomFluxTransformer2DModel(FluxTransformer2DModel):
         
         hidden_states = torch.cat([encoder_hidden_states, hidden_states_final], dim=1)
 
-        for index_block, block in enumerate(self.single_transformer_blocks):
-            if self.training and self.gradient_checkpointing:
-                def create_custom_forward(module, return_dict=None):
-                    def custom_forward(*inputs):
-                        if return_dict is not None:
-                            return module(*inputs, return_dict=return_dict)
-                        else:
-                            return module(*inputs)
-                    return custom_forward
-                ckpt_kwargs: Dict[str, Any] = {"use_reentrant": False} if is_torch_version(">=", "1.11.0") else {}
-                hidden_states = torch.utils.checkpoint.checkpoint(
-                    create_custom_forward(block),
-                    hidden_states,
-                    temb,
-                    image_rotary_emb,
-                    attention_mask,
-                    **ckpt_kwargs,
-                )
-            else:
-                hidden_states = block(
-                    hidden_states=hidden_states,
-                    temb=temb,
-                    image_rotary_emb=image_rotary_emb,
-                    attention_mask = attention_mask,
-                )
+        for block in self.single_transformer_blocks:
+            hidden_states = block(
+                hidden_states=hidden_states,
+                temb=temb,
+                image_rotary_emb=image_rotary_emb,
+                attention_mask = attention_mask,
+            )
         hidden_states = hidden_states[:, encoder_hidden_states.shape[1] :, ...]
         hidden_states = hidden_states[:, :num_layer_tokens]
 

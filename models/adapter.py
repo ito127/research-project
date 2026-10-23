@@ -2,10 +2,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from typing import Optional, Tuple, List
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-from typing import Optional, Tuple, List
 
 def modulate(x, shift, scale):
     return x * (1 + scale) + shift
