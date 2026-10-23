@@ -301,6 +301,104 @@ class CustomFluxTransformer2DModel(FluxTransformer2DModel):
 
         return full_mask
 
+    @staticmethod
+    def patchify_latents(latents: torch.Tensor) -> torch.Tensor:
+        """Convert ``[B, L, C, H, W]`` FLUX latents to patch features."""
+        bs, n_layers, channel_latent, height, width = latents.shape
+        latents = latents.view(bs, n_layers, channel_latent, height // 2, 2, width // 2, 2)
+        latents = latents.permute(0, 1, 3, 5, 2, 4, 6)
+        return latents.reshape(bs, n_layers, height // 2, width // 2, channel_latent * 4)
+
+    @staticmethod
+    def crop_token_maps(token_maps: torch.Tensor, list_layer_box: List[Tuple]) -> torch.Tensor:
+        """Crop per-layer token maps ``[B, L, h, w]`` into the model's image-token order, as ``[B, T_img, 1]``."""
+        token_masks = []
+        for layer_idx, box in enumerate(list_layer_box):
+            if box is None:
+                continue
+            x1, y1, x2, y2 = (v // 16 for v in box)
+            token_mask = token_maps[:, layer_idx, y1:y2, x1:x2]
+            token_masks.append(token_mask.reshape(token_mask.shape[0], -1, 1))
+        return torch.cat(token_masks, dim=1).to(dtype=torch.bool)
+
+    @staticmethod
+    def reference_image_ids(box, img_ids):
+        """Positions of a reference crop: layer id 0 (as the full-image layer) and the BBox's token grid."""
+        x1, y1, x2, y2 = (v // 16 for v in box)
+        ys, xs = torch.meshgrid(torch.arange(y1, y2), torch.arange(x1, x2), indexing="ij")
+        ids = torch.zeros((ys.numel(), 3), dtype=img_ids.dtype, device=img_ids.device)
+        ids[:, 1] = ys.flatten().to(ids.device)
+        ids[:, 2] = xs.flatten().to(ids.device)
+        return ids
+
+    @staticmethod
+    def extend_mask_with_foreground_reference(full_mask, list_layer_box, t_text_length, reference_box,
+                                              enhance_value=0):
+        """Append the foreground-reference tokens (a second full-image layer) to the attention mask.
+
+        - object-layer queries no longer see the full-image layer (index 0); instead they see the
+          reference tokens inside their own BBox, as they saw layer 0 before;
+        - reference queries see the reference tokens and the text tokens;
+        - text, full-image and background queries never see the reference tokens.
+        """
+        device = full_mask.device
+        layer_ids, rois = [], []
+        for layer_idx, box in enumerate(list_layer_box):
+            if box is None:
+                continue
+            x1, y1, x2, y2 = box
+            n = (y2 // 16 - y1 // 16) * (x2 // 16 - x1 // 16)
+            layer_ids += [layer_idx] * n
+            rois += [(x1 // 16, y1 // 16, x2 // 16, y2 // 16)] * n
+        layer_ids = torch.tensor(layer_ids, device=device)
+        rois = torch.tensor(rois, device=device)
+        t_old = full_mask.shape[0]
+        if t_old != t_text_length + layer_ids.numel():
+            raise RuntimeError("Attention mask does not match the layer boxes.")
+        x1, y1, x2, y2 = (v // 16 for v in reference_box)
+        ref_y, ref_x = torch.meshgrid(torch.arange(y1, y2, device=device), torch.arange(x1, x2, device=device),
+                                      indexing="ij")
+        ref_x, ref_y = ref_x.flatten(), ref_y.flatten()
+        t_total = t_old + ref_x.numel()
+        mask = torch.full((t_total, t_total), -1e9, dtype=full_mask.dtype, device=device)
+        mask[:t_old, :t_old] = full_mask
+        image = slice(t_text_length, t_old)
+        reference = slice(t_old, t_total)
+        object_query = layer_ids.unsqueeze(1) >= 2
+        # Object layers: drop the full-image keys ...
+        image_view = mask[image, image]
+        image_view[object_query & (layer_ids == 0).unsqueeze(0)] = -1e9
+        # ... and see the reference keys inside their BBox.
+        inside = ((ref_x.unsqueeze(0) >= rois[:, 0:1]) & (ref_x.unsqueeze(0) < rois[:, 2:3])
+                  & (ref_y.unsqueeze(0) >= rois[:, 1:2]) & (ref_y.unsqueeze(0) < rois[:, 3:4]))
+        mask[image, reference][object_query & inside] = enhance_value
+        # Reference queries: reference tokens and text only.
+        mask[reference, reference] = enhance_value
+        mask[reference, :t_text_length] = enhance_value
+        return mask
+
+    def block_tokens_from_background(self, attention_mask, blocked_token_maps, list_layer_box, t_text_length):
+        """Hide the tokens marked in ``blocked_token_maps`` from the background-layer (layer 1) queries.
+
+        Every other query row of ``attention_mask`` is unchanged.
+        """
+        blocked = self.crop_token_maps(blocked_token_maps, list_layer_box)
+        if blocked.shape[0] != 1 and not torch.equal(blocked, blocked[:1].expand_as(blocked)):
+            raise ValueError("blocked_token_maps must be the same for the whole batch.")
+        layer_ids = []
+        for layer_idx, box in enumerate(list_layer_box):
+            if box is None:
+                continue
+            x1, y1, x2, y2 = (v // 16 for v in box)
+            layer_ids += [layer_idx] * ((y2 - y1) * (x2 - x1))
+        layer_ids = torch.tensor(layer_ids, device=attention_mask.device)
+        rows = t_text_length + torch.nonzero(layer_ids == 1, as_tuple=False).flatten()
+        cols = t_text_length + torch.nonzero(blocked[0, :, 0], as_tuple=False).flatten()
+        blocked_mask = attention_mask.clone()
+        if rows.numel() > 0 and cols.numel() > 0:
+            blocked_mask[rows[:, None], cols[None, :]] = torch.finfo(attention_mask.dtype).min
+        return blocked_mask
+
     def forward(
         self,
         hidden_states: torch.Tensor,
@@ -315,7 +413,15 @@ class CustomFluxTransformer2DModel(FluxTransformer2DModel):
         guidance: torch.Tensor = None,
         joint_attention_kwargs: Optional[Dict[str, Any]] = None,
         return_dict: bool = True,
+        blocked_token_maps: Optional[torch.Tensor] = None,
+        foreground_reference_latents: Optional[torch.Tensor] = None,
     ) -> Union[torch.FloatTensor, Transformer2DModelOutput]:
+        """``blocked_token_maps`` ([batch, layers, H/2, W/2], bool): image tokens hidden from the background-layer
+        queries in every MMDiT and single-stream block (see ``block_tokens_from_background``).
+        ``foreground_reference_latents`` ([batch, 1, C, H, W], clean): an extra full-image layer seen only by the
+        object layers (inside their BBoxes) in place of layer 0; see ``extend_mask_with_foreground_reference``.
+        Its tokens are appended after the image tokens, use layer 0's layer embedding and positions, skip the
+        refiner and are dropped from the output."""
 
         if joint_attention_kwargs is not None:
             joint_attention_kwargs = joint_attention_kwargs.copy()
@@ -332,9 +438,7 @@ class CustomFluxTransformer2DModel(FluxTransformer2DModel):
         bs, n_layers, channel_latent, height, width = hidden_states.shape 
 
         # Patchify Noisy Latents
-        hidden_states = hidden_states.view(bs, n_layers, channel_latent, height // 2, 2, width // 2, 2)
-        hidden_states = hidden_states.permute(0, 1, 3, 5, 2, 4, 6) 
-        hidden_states = hidden_states.reshape(bs, n_layers, height // 2, width // 2, channel_latent * 4) 
+        hidden_states = self.patchify_latents(hidden_states)
 
         # [Flux Linear Layer]
         hidden_states = self.x_embedder(hidden_states) 
@@ -345,13 +449,30 @@ class CustomFluxTransformer2DModel(FluxTransformer2DModel):
         hidden_states = hidden_states + layer_pe[:, :n_layers] 
         
         # Crop Sequence (Feature Space)
-        hidden_states = self.crop_each_layer(hidden_states, list_layer_box, 16)         
-        
+        hidden_states = self.crop_each_layer(hidden_states, list_layer_box, 16)
+        num_layer_tokens = hidden_states.shape[1]
+
+        reference_tokens = None
+        if foreground_reference_latents is not None:
+            if tuple(foreground_reference_latents.shape) != (bs, 1, channel_latent, height, width):
+                raise ValueError("foreground_reference_latents must have shape [batch, 1, channels, height, width].")
+            reference_states = self.x_embedder(self.patchify_latents(foreground_reference_latents.to(hidden_states.dtype)))
+            reference_states = reference_states + layer_pe[:, :1]
+            reference_tokens = self.crop_each_layer(reference_states, [list_layer_box[0]], 16)
+
         # Attention Mask
         T_text = encoder_hidden_states.shape[1]
         attention_mask = self.build_additive_spatial_roi_mask_v2(
             list_layer_box, height=height, width=width, t_text_length=T_text, device=hidden_states.device, dtype=hidden_states.dtype,
-        )     
+        )
+        if reference_tokens is not None:
+            attention_mask = self.extend_mask_with_foreground_reference(
+                attention_mask, list_layer_box, T_text, list_layer_box[0])
+            hidden_states = torch.cat([hidden_states, reference_tokens], dim=1)
+        if blocked_token_maps is not None:
+            if tuple(blocked_token_maps.shape) != (bs, n_layers, height // 2, width // 2):
+                raise ValueError("blocked_token_maps must have shape [batch, layers, latent_height/2, latent_width/2].")
+            attention_mask = self.block_tokens_from_background(attention_mask, blocked_token_maps, list_layer_box, T_text)
 
         # Embeddings...
         timestep = timestep.to(hidden_states.dtype) * 1000
@@ -368,7 +489,11 @@ class CustomFluxTransformer2DModel(FluxTransformer2DModel):
 
         if txt_ids.ndim == 3: txt_ids = txt_ids[0]
         if img_ids.ndim == 3: img_ids = img_ids[0]
-        ids = torch.cat((txt_ids, img_ids), dim=0)
+        if reference_tokens is not None:
+            img_ids_all = torch.cat((img_ids, self.reference_image_ids(list_layer_box[0], img_ids)), dim=0)
+        else:
+            img_ids_all = img_ids
+        ids = torch.cat((txt_ids, img_ids_all), dim=0)
         image_rotary_emb = self.pos_embed(ids)
 
         # --- Transformer Blocks Loop ---
@@ -406,15 +531,16 @@ class CustomFluxTransformer2DModel(FluxTransformer2DModel):
         image_rotary_emb_refiner = self.pos_embed(ids_refiner)
 
         delta = self.refiner.forward_feature_attn(
-            hidden_states=hidden_states[:, l0_len:, :],
+            hidden_states=hidden_states[:, l0_len:num_layer_tokens, :],
             clean_tokens =clean_tokens,
             temb=temb,
-            split_sizes=split_sizes, 
+            split_sizes=split_sizes,
             image_rotary_emb=image_rotary_emb_refiner,
         )
-        
-        hidden_states_part2 = hidden_states[:, l0_len:, :] + delta
-        hidden_states_final = torch.cat((hidden_states[:, :l0_len, :], hidden_states_part2), dim=1)
+
+        hidden_states_part2 = hidden_states[:, l0_len:num_layer_tokens, :] + delta
+        hidden_states_final = torch.cat((hidden_states[:, :l0_len, :], hidden_states_part2,
+                                         hidden_states[:, num_layer_tokens:, :]), dim=1)
         
         hidden_states = torch.cat([encoder_hidden_states, hidden_states_final], dim=1)
 
@@ -444,6 +570,7 @@ class CustomFluxTransformer2DModel(FluxTransformer2DModel):
                     attention_mask = attention_mask,
                 )
         hidden_states = hidden_states[:, encoder_hidden_states.shape[1] :, ...]
+        hidden_states = hidden_states[:, :num_layer_tokens]
 
         hidden_states = self.fill_in_processed_tokens(hidden_states, full_hidden_states, list_layer_box) 
         hidden_states = hidden_states.view(bs, -1, self.inner_dim) 

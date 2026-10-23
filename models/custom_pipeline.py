@@ -561,6 +561,12 @@ class CustomFluxPipelineCfg(FluxPipeline):
         max_sequence_length: int = 512,
         num_layers: int = 5,
         transparent_decoder: nn.Module = None,
+        blocked_token_maps_callback: Optional[Callable[[int], torch.Tensor]] = None,
+        velocity_correction_callback: Optional[
+            Callable[[int, torch.Tensor, torch.Tensor, torch.Tensor], torch.Tensor]
+        ] = None,
+        foreground_adapter_image: Optional[torch.Tensor] = None,
+        foreground_reference_image: Optional[torch.Tensor] = None,
     ):
         r"""
         Function invoked when calling the pipeline for generation.
@@ -623,6 +629,19 @@ class CustomFluxPipelineCfg(FluxPipeline):
                 will be passed as `callback_kwargs` argument. You will only be able to include variables listed in the
                 `._callback_tensor_inputs` attribute of your pipeline class.
             max_sequence_length (`int` defaults to 512): Maximum sequence length to use with the `prompt`.
+            blocked_token_maps_callback (`Callable`, *optional*):
+                Called before the transformer at every step as `blocked_token_maps_callback(step)` and returns a
+                bool tensor `[batch, num_layers, latent_height / 2, latent_width / 2]`. The marked image tokens are
+                hidden from the background-layer (layer 1) queries in every MMDiT and single-stream block.
+            velocity_correction_callback (`Callable`, *optional*):
+                Called after classifier-free guidance and before the scheduler step as
+                `velocity_correction_callback(step, sigma, latents, velocity)` and returns the corrected velocity.
+            foreground_adapter_image (`torch.Tensor`, *optional*):
+                Refiner condition of the object layers (layers 2+) in place of `full_image`. The background layer
+                keeps `full_image`.
+            foreground_reference_image (`torch.Tensor`, *optional*):
+                An extra clean full-image layer that the object layers attend to (inside their BBoxes) in place of
+                layer 0. No other layer sees it.
 
         Examples:
 
@@ -631,7 +650,7 @@ class CustomFluxPipelineCfg(FluxPipeline):
             is True, otherwise a `tuple`. When returning a tuple, the first element is a list with the generated
             images.
         """
-        
+
         #pdb.set_trace()
         height = height or self.default_sample_size * self.vae_scale_factor
         width = width or self.default_sample_size * self.vae_scale_factor
@@ -720,7 +739,20 @@ class CustomFluxPipelineCfg(FluxPipeline):
         )
         # print("latents:",latents.shape)
         latents[:, 0, :, :, :] = full_image_latent
-        
+        # Optional second full-image layer seen only by the object layers (in
+        # place of layer 0, inside their BBoxes); clean, constant over steps.
+        foreground_reference_latents = None
+        if foreground_reference_image is not None:
+            if foreground_reference_image.shape != full_image.shape:
+                raise ValueError("foreground_reference_image must have the same shape as full_image.")
+            foreground_reference_latents = self.vae.encode(
+                foreground_reference_image.to(device=device, dtype=full_image_unsqueezed.dtype)
+            ).latent_dist.mode()
+            foreground_reference_latents = (
+                foreground_reference_latents - self.vae.config.shift_factor) * self.vae.config.scaling_factor
+            foreground_reference_latents = foreground_reference_latents.view(
+                b, 1, latent_c, latent_h, latent_w).to(latents.dtype)
+
         # 5. Prepare timesteps
         sigmas = np.linspace(1.0, 1 / num_inference_steps, num_inference_steps)
         image_seq_len = latent_image_ids.shape[0]
@@ -754,6 +786,13 @@ class CustomFluxPipelineCfg(FluxPipeline):
         ##Adapter data####
         num_bg_fgs = num_layers - 1
         init_images = init_full.expand(-1, num_bg_fgs, -1, -1, -1)
+        if foreground_adapter_image is not None:
+            # The object layers' refiner conditions come from this image
+            # instead of full_image (the background layer is unchanged).
+            if foreground_adapter_image.shape != full_image.shape:
+                raise ValueError("foreground_adapter_image must have the same shape as full_image.")
+            init_images = init_images.clone()
+            init_images[:, 1:] = foreground_adapter_image.to(device=init_images.device, dtype=init_images.dtype)
         all_images_for_vae = init_images.flatten(0, 1)
 
         split_sizes = []
@@ -829,9 +868,15 @@ class CustomFluxPipelineCfg(FluxPipeline):
 
                 timestep = t.expand(latents.shape[0]).to(latents.dtype)
                 latents[:, :1, :, :, :] = full_image_latent
+                blocked_token_maps = None
+                if blocked_token_maps_callback is not None:
+                    # [b, num_layers, h/2, w/2] bool: tokens hidden from the background queries at this step.
+                    blocked_token_maps = blocked_token_maps_callback(i).to(device=latents.device, dtype=torch.bool)
                 noise_pred = self.transformer(
                     hidden_states=latents,
                     adapter_data=masked_image_latents,
+                    blocked_token_maps=blocked_token_maps,
+                    foreground_reference_latents=foreground_reference_latents,
                     split_sizes=split_sizes,
                     list_layer_box=validation_box,
                     timestep=timestep / 1000,
@@ -847,6 +892,8 @@ class CustomFluxPipelineCfg(FluxPipeline):
                 neg_noise_pred = self.transformer(
                     hidden_states=latents,
                     adapter_data=masked_image_latents,
+                    blocked_token_maps=blocked_token_maps,
+                    foreground_reference_latents=foreground_reference_latents,
                     split_sizes=split_sizes,
                     list_layer_box=validation_box,
                     timestep=timestep / 1000,
@@ -860,6 +907,12 @@ class CustomFluxPipelineCfg(FluxPipeline):
                 )[0]
 
                 noise_pred = neg_noise_pred + true_gs * (noise_pred - neg_noise_pred)
+
+                if velocity_correction_callback is not None:
+                    # Caller-defined velocity correction (after CFG, before the
+                    # scheduler): receives (step, sigma_k, z_k, v_k) and returns v_k'.
+                    sigma_k = self.scheduler.sigmas[i].to(device=latents.device, dtype=torch.float32)
+                    noise_pred = velocity_correction_callback(i, sigma_k, latents, noise_pred)
 
                 latents_dtype = latents.dtype
                 latents = self.scheduler.step(noise_pred, t, latents, return_dict=False)[0]
