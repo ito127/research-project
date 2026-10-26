@@ -21,8 +21,8 @@ whole mask for `all_text`), and `b` is its tight BBox.
 
 | Input | Content | Used by |
 |---|---|---|
-| Image B | the original image | keep target `z_src` (VAE posterior mode) |
-| Full-image layer (index 0) | image B with `M` (dilated by 2 px) filled from the colours just outside it, blurred more the further inside (σ from 0 at the edge to 12 px at 60 px) | layer 0, refiner condition of the background layer |
+| Image B | the original image | the full-image layer is made from it |
+| Full-image layer (index 0) | image B with `M` (dilated by 2 px) filled from the colours just outside it, blurred more the further inside (σ from 0 at the edge to 12 px at 60 px) | layer 0, refiner condition of the background layer, keep target `z_src` (VAE posterior mode) |
 | Image A | the original inside `M`; outside it, the colours of the mask boundary spread outwards with the same gradual blur | refiner condition of the text layer, and an extra full-image layer that only the text layer attends to (inside `b`) in place of layer 0 |
 | Object layer (index 2) | BBox `b` | the text layer |
 
@@ -39,8 +39,10 @@ The pipeline runs 30 flow-matching steps (seed 43, guidance 1.0). At step `k`:
   actually extracts.
 - **Keep (velocity correction, after the transformer).** Outside `M_k` dilated by one latent cell, the background
   layer's clean estimate is replaced by `z_src`:
-  `v' = v + (x̂0 − z_src) / σ_k`, so `z_k − σ_k v' = z_src` there. Inside the dilated `M_k` the background is
-  generated freely.
+  `v' = v + (x̂0 − z_src) / σ_k`, so `z_k − σ_k v' = z_src` there. `z_src` is the latent of the full-image layer,
+  which equals the original image outside `M` (dilated by 2 px). Inside `M` but outside the dilated `M_k`, it pulls
+  the background to the filled colours instead of the text. Inside the dilated `M_k` the background is generated
+  freely.
 - **Attention blocking (before the transformer at step `k + 1`).** The full-image-layer tokens under `M_k`
   (16-pixel tokens) are hidden from every background-layer query in all 19 MMDiT and 38 single-stream blocks. To do
   this, the additive attention mask is set to −∞ for those query/key pairs. The background can no longer copy the

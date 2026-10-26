@@ -5,9 +5,10 @@ the cells where the text layer's clean estimate differs from the transparent (gr
 inside the text BBox. The controller is handed to the pipeline as two callbacks:
 
 * ``correct`` (``velocity_correction_callback``, after the transformer at step ``k``): outside ``M_k`` dilated by
-  ``keep_dilation`` cells, the background layer's clean estimate is replaced by the latent of the original image
-  ``z_src`` wherever it strayed more than ``keep_tau`` (``keep_tau = 0``: everywhere it differs). Nothing is done
-  inside the dilated ``M_k``, where the background is generated.
+  ``keep_dilation`` cells, the background layer's clean estimate is replaced by the latent of the full-image layer
+  (the original image with the text filled in) ``z_src`` wherever it strayed more than ``keep_tau``
+  (``keep_tau = 0``: everywhere it differs). Nothing is done inside the dilated ``M_k``, where the background is
+  generated.
 * ``token_maps`` (``blocked_token_maps_callback``, before the transformer at step ``k + 1``): the full-image layer's
   tokens under ``M_k`` are hidden from the background queries, so the background never reads the text pixels.
   The blocking therefore uses the mask of the previous step; step 0 uses the input text mask.

@@ -1,10 +1,11 @@
-"""Single-pass text removal: one RevealLayer inference, text layer from image A, background kept to image B.
+"""Single-pass text removal: one RevealLayer inference, text layer from image A, background kept to the full image.
 
 Inputs of one inference (all at the RevealLayer resolution):
 
-* image B: the original image. Its latent ``z_src`` is the keep target of the background outside the text.
+* image B: the original image, from which the full-image layer is made.
 * full-image layer (index 0, also the background layer's refiner condition): image B with the text mask (dilated
-  by ``inpaint_dilation_px``) filled from the surrounding colours (``fill_from_boundary``).
+  by ``inpaint_dilation_px``) filled from the surrounding colours (``fill_from_boundary``). Its latent ``z_src`` is
+  the keep target of the background outside the text.
 * image A: the original inside the text mask, the surrounding colours outside it (``extend_boundary_colors``).
   It is the refiner condition of the text layer and a second full-image layer that only the text layer attends to,
   in place of layer 0, so the text layer is extracted from an image that contains only the text.
@@ -92,7 +93,7 @@ def remove_text(pipeline, decoder, device, inputs: PreparedInputs, config: TextR
     """Run one inference. Returns ``(background RGB, background RGBA, text layer RGBA, controller, seconds)``."""
     width, height = inputs.geometry.target_size
     z_grey = grey_latent(pipeline, height, width, device)
-    source = encode_latent(pipeline, inputs.image_b, device)
+    source = encode_latent(pipeline, inputs.full_image, device)
     latent_h, latent_w = height // VAE_SCALE_FACTOR, width // VAE_SCALE_FACTOR
     previews = set(range(0, config.steps, config.preview_every)) | {config.steps - 1} if record_previews else ()
     controller = TextRemovalController(

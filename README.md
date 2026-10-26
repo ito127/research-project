@@ -15,7 +15,7 @@ reference image I<sub>fg</sub> (the text alone). Middle: the denoising loop, in 
 Z<sub>src</sub>) follows every DiT pass. Bottom: the tokens of one DiT block. The foreground reference image is added
 as extra tokens that only the text layer reads, and the background layer's attention to the text inside the mask
 is blocked. Right: the output background layer (the text-free image) and foreground (text) layer.
-Z<sub>src</sub> is the VAE latent of the input image I<sub>c</sub>.</sub>
+Z<sub>src</sub> is the VAE latent of the background reference image I<sub>bg</sub>.</sub>
 
 ## Abstract
 
@@ -26,7 +26,7 @@ hidden behind each object, and treat the text as the object: the recovered backg
 Applied as is, RevealLayer fails in two ways. The background layer copies the text from the full-image layer it
 attends to, and it drifts away from the input outside the text. We change only the inference of the pretrained
 model: the text layer and the background read separate reference images, a velocity correction keeps the
-background equal to the input outside the text, and the background's attention to the text tokens is blocked.
+background equal to the input with the text filled in outside the text, and the background's attention to the text tokens is blocked.
 The text mask used by both is taken from the text layer at every denoising step, so one run is enough and no
 training is needed. On the SCUT-EnsText test set (813 images), the method reaches 44.06 dB PSNR in the main
 setting, higher than every diffusion-based inpainting baseline we compare (ASUKA, OSOR, FLUX.1-Fill, RePaint) and
@@ -39,8 +39,8 @@ second only to ViTEraser, a dedicated model trained on SCUT-EnsText.
 - **A text mask that follows the model.** From step 1 on, the mask is the region where the text layer's clean
   estimate is not transparent. The keep and the blocking both use it, so a single denoising run is enough.
 - **Background keep by velocity correction.** Outside the dilated mask, the velocity is corrected so that the
-  background's clean estimate equals the latent of the input image. The background outside the text is preserved
-  without a second pass.
+  background's clean estimate equals the latent of the background reference image (the input with the text
+  filled in). The background outside the text is preserved without a second pass.
 - **Attention blocking and separate references.** The text tokens under the mask are hidden from the background
   queries through the attention mask of all 19 MMDiT and 38 single-stream blocks. The text layer reads an image
   that contains only the text, and the background reads an image in which the text is already roughly filled in.
