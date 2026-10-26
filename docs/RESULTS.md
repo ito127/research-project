@@ -1,27 +1,49 @@
 # Results on SCUT-EnsText
 
-SCUT-EnsText test set (813 images, 512×512). We use the official ViTEraser evaluation script (PSNR, MS-SSIM, MSE,
-AGE, pEPS, pCEPS) and pytorch-fid. **Bold** = best per column. The reference row "input image as is" is excluded
-from the best.
+## Evaluation protocol
 
-- **largest_text** (main setting): only the largest 8-connected component `L` of the text mask is removed. The GT is
-  the official text-removed image inside `L` and the input image outside `L`.
-- **all_text**: every text is removed. The GT is the official GT.
-- **paste**: the method's output inside the evaluated text region, the GT outside it. This compares only the
-  removal itself.
-- **raw**: the output as is, so degradation outside the text region is also counted.
+- **Data:** the SCUT-EnsText test set (813 images, 512×512). Masks are used as given (no dilation).
+- **Text scope:**
+  - **largest_text** (main setting): only the largest 8-connected component `L` of the text mask is removed. The GT
+    is the official text-removed image inside `L` and the input image outside `L`.
+  - **all_text:** every text is removed. The GT is the official GT.
+- **Evaluation target:** each output is evaluated in two ways.
 
-Settings of the compared methods:
+  | Target | Inside the evaluated text region | Outside it | What it measures |
+  |---|---|---|---|
+  | **paste** | method output | GT | the removal itself (main) |
+  | **raw** | method output | method output | the removal and any change outside the text |
 
-- Our results are produced at 1024 px and resized back to 512 px (LANCZOS).
-- ViTEraser and ConText erase every text in the image, so they have no largest_text raw result.
-- RePaint was run on img_0–img_499 only (largest_text).
-- img_324 has an empty text mask. Our output for it is therefore the input image, and the official script skips it
-  (MSE = 0).
+  The difference between the two is the damage a method does outside the text. Ours regenerates the whole image
+  at 1024 px and resizes it back to 512 px, so its raw score includes the small differences this causes.
+- **Metrics:** the official ViTEraser evaluation script (PSNR, MS-SSIM, MSE, AGE, pEPS, pCEPS) and pytorch-fid.
+  **Bold** = best per column; the reference row "input image as is" is excluded from the best. `n` is the number
+  of evaluated images. The official script skips an image whose output equals the GT (MSE = 0). img_324 has an
+  empty text mask, so our output for it is the input image and it is skipped (paste: for every method).
 
-`n` = number of evaluated images.
+## Compared methods
 
-## largest_text
+| Method | Type | Inference resolution | Seed | Results |
+|---|---|---|---|---|
+| Ours | RevealLayer, training-free (this repository) | 1024 → 512 (LANCZOS) | 43 | all |
+| ASUKA (FLUX.1-Fill) | diffusion-based inpainting | 512 | 42 | all |
+| OSOR | diffusion-based inpainting | 1024 (upscaled) | 42 | all |
+| FLUX.1-Fill | diffusion-based inpainting | 1024 (upscaled) | 42 | all |
+| RePaint | diffusion-based inpainting | 256 (crop around the text, pasted back) | 777 | largest_text, img_0–img_499 |
+| ViTEraser | dedicated text removal model | 512 | – | erases every text |
+| ConText | dedicated text removal model | 512 | – | erases every text |
+
+- Ours and the inpainting baselines get the same text mask. ViTEraser and ConText take no mask: they find the text
+  themselves and erase every text they find. Each result comes from a single seed.
+- ViTEraser is trained on the SCUT-EnsText training set and evaluated on its test set. Our model and the
+  diffusion-based inpainting baselines are not trained on SCUT-EnsText.
+- ViTEraser and ConText erase every text in the image, so they have no largest_text raw result. Their largest_text
+  paste result uses their output inside `L` only.
+- RePaint was run on img_0–img_499 only (largest_text), so a separate 500-image subset table includes it.
+
+## Quantitative results
+
+### largest_text
 
 All 813 images, paste:
 
@@ -66,7 +88,14 @@ img_0–img_499, raw (with RePaint):
 | FLUX.1-Fill | 28.39 | 0.9605 | 0.00326 | 5.315 | 0.0276 | 0.0151 | 22.04 | 500 |
 | RePaint | 35.51 | 0.9616 | 0.00144 | **2.180** | 0.0219 | 0.0079 | 15.79 | 500 |
 
-## all_text
+- **paste:** ours is second after ViTEraser in PSNR, MS-SSIM and FID, and third after ViTEraser and ConText in
+  MSE, AGE, pEPS and pCEPS. It is better than every diffusion-based inpainting baseline in all metrics, on all
+  813 images and on the 500-image subset.
+- **raw:** among the methods with a largest_text raw result, ours is best in all metrics except AGE (ASUKA on all
+  images, RePaint on the subset). AGE averages the absolute grey-level error over the whole image, so the small
+  brightness differences that our 1024 px regeneration leaves outside `L` likely count against it.
+
+### all_text
 
 All 813 images, paste:
 
@@ -92,11 +121,51 @@ All 813 images, raw:
 | ConText | 34.08 | 0.9620 | 0.00109 | 1.938 | 0.0114 | 0.0058 | 24.33 | 813 |
 | Input image as is (reference) | 26.01 | 0.9277 | 0.00676 | 4.697 | 0.0400 | 0.0270 | 53.22 | 813 |
 
+- **paste:** ours is second after ViTEraser in PSNR (37.37 dB, close to ConText's 37.34 dB), MS-SSIM and FID, and
+  third after ViTEraser and ConText in the other metrics. It is better than every diffusion-based inpainting
+  baseline in all metrics, the same ranking as in largest_text.
+- **raw:** ours is third in PSNR and MS-SSIM, second in FID and fourth (behind ASUKA as well) in MSE, AGE, pEPS and
+  pCEPS. With more text per image, both the errors inside the mask and the changes outside it weigh more than in
+  largest_text.
+- The paste PSNR gap to ViTEraser grows from 4.5 dB (largest_text) to 6.4 dB (all_text).
+
+## Per-image PSNR
+
+PSNR inside the evaluated text region, per image (paste targets; `eval/qualitative.py` writes it to
+`per_image_psnr.csv`). "Best on" counts the images on which a method has the highest PSNR of all methods.
+
+**largest_text**, img_0–img_499 (all seven methods; img_324 excluded, 499 images):
+
+| Method | Median [dB] | Mean [dB] | Below 12 dB | Best on |
+|---|---|---|---|---|
+| Ours | 29.39 | 27.91 | 3.4% | 57 |
+| ASUKA (FLUX.1-Fill) | 12.68 | 13.50 | 42.7% | 2 |
+| OSOR | 22.13 | 22.39 | 14.2% | 40 |
+| FLUX.1-Fill | 13.51 | 14.64 | 35.9% | 2 |
+| RePaint | 22.53 | 23.36 | 9.4% | 34 |
+| ViTEraser | 33.74 | 32.59 | 0.8% | 345 |
+| ConText | 28.51 | 26.81 | 3.6% | 19 |
+
+**all_text**, all images (six methods; img_324 excluded, 812 images):
+
+| Method | Median [dB] | Mean [dB] | Below 12 dB | Best on |
+|---|---|---|---|---|
+| Ours | 24.53 | 23.93 | 9.7% | 73 |
+| ASUKA (FLUX.1-Fill) | 17.34 | 18.86 | 15.8% | 21 |
+| OSOR | 19.65 | 20.65 | 18.0% | 53 |
+| FLUX.1-Fill | 16.18 | 17.45 | 20.1% | 12 |
+| ViTEraser | 30.93 | 30.35 | 0.5% | 619 |
+| ConText | 23.97 | 23.90 | 4.7% | 34 |
+
+Ours has the second-highest median in both scopes. In all_text it has more images with a low PSNR (9.7% below
+12 dB, against 3.4% in largest_text).
+
 ## Qualitative results
 
 The images are ranked by our PSNR inside the evaluated text minus that of the best other method (paste targets).
 Only images whose evaluated text has at least 1500 pixels are considered, so the region is visible. The five
-images with the largest margin are shown. Each cell is a crop around the evaluated text, which is outlined in red in
+images with the largest margin are shown. They are the cases where ours leads most, not typical ones; the overall
+distribution is in [Per-image PSNR](#per-image-psnr). Each cell is a crop around the evaluated text, which is outlined in red in
 the input. The figures use `eval/qualitative.py`. Images: SCUT-EnsText test set, shown for research comparison only.
 
 **largest_text** (img_0–img_499, with RePaint):

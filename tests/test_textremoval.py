@@ -1,4 +1,5 @@
-"""CPU unit tests of the text-removal helpers and the attention-mask edits (no model weights needed).
+"""CPU unit tests of the text-removal helpers, the attention-mask edits and the skip check of
+scripts/remove_text.py (no model weights needed).
 
     python -m unittest discover -s tests
 """
@@ -125,6 +126,33 @@ class AttentionMaskTests(unittest.TestCase):
         self.assertTrue((blocked[background, column] < -1e30).all())
         changed = (blocked != mask).nonzero()
         self.assertTrue(((changed[:, 0] >= 19) & (changed[:, 0] < 35) & (changed[:, 1] == column)).all())
+
+
+class SkipCheckTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        sys.path.insert(0, str(REPO_ROOT / "scripts"))
+        import remove_text
+        cls.cli = remove_text
+
+    def test_missing_outputs(self):
+        import tempfile
+
+        cli = self.cli
+        names = cli.expected_outputs(paste_back=True, save_intermediates=False)
+        self.assertEqual(names, [*cli.RESULT_FILES, "result.png"])
+        self.assertEqual(len(cli.expected_outputs(paste_back=False, save_intermediates=True)),
+                         len(cli.RESULT_FILES) + len(cli.INTERMEDIATE_FILES))
+        with tempfile.TemporaryDirectory() as directory:
+            out_dir = Path(directory)
+            self.assertEqual(cli.missing_outputs(out_dir / "absent", names), names)
+            for name in cli.RESULT_FILES:
+                (out_dir / name).write_bytes(b"x")
+            self.assertEqual(cli.missing_outputs(out_dir, names), ["result.png"])
+            (out_dir / "result.png").touch()          # empty: an interrupted write
+            self.assertEqual(cli.missing_outputs(out_dir, names), ["result.png"])
+            (out_dir / "result.png").write_bytes(b"x")
+            self.assertEqual(cli.missing_outputs(out_dir, names), [])
 
 
 if __name__ == "__main__":
